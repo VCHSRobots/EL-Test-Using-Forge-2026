@@ -19,8 +19,10 @@ public class RobotContainer {
     this.unit = unit;
     if (unit.known()) {
       elevator = new Elevator(RobotBase.isSimulation() ? new SimElevatorIO() : new TalonElevatorIO(unit));
-      // Moves only while enabled, only as NetworkTables /Elevator/Control/TargetInches says.
-      elevator.setDefaultCommand(elevator.followNetworkTables());
+      // Moves only while enabled. Left stick Y on pad 0 jogs it at 1 in/s (forward = up).
+      // NetworkTables control (elevator.followNetworkTables()) is not the default for now.
+      edu.wpi.first.wpilibj.XboxController pad = new edu.wpi.first.wpilibj.XboxController(0);
+      elevator.setDefaultCommand(elevator.jog(() -> -pad.getLeftY()));
     } else {
       elevator = null;
       DriverStation.reportWarning("Unknown unit " + unit.serial() + ": elevator not built", false);
