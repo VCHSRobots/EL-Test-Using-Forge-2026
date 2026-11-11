@@ -96,6 +96,20 @@ public class TalonElevatorIO implements ElevatorIO {
   }
 
   @Override
+  public void setPosition(double rotations, boolean useRight, boolean useLeft) {
+    if (useRight) {
+      right.setControl(rightRequest.withPosition(rotations));
+    } else {
+      right.setControl(neutral);
+    }
+    if (useLeft) {
+      left.setControl(leftRequest.withPosition(rotations));
+    } else {
+      left.setControl(neutral);
+    }
+  }
+
+  @Override
   public void neutral() {
     right.setControl(neutral);
     left.setControl(neutral);

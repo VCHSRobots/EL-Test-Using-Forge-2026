@@ -9,6 +9,14 @@ public interface ElevatorIO {
   /** Command both motors to this position (motor rotations, up positive) with a position loop. */
   void setPosition(double rotations);
 
+  /**
+   * Position loop on only the chosen motors; the other motor gets neutral output (it still turns
+   * with the chain and is still read). Default for implementations with no single-motor mode: both.
+   */
+  default void setPosition(double rotations, boolean useRight, boolean useLeft) {
+    setPosition(rotations);
+  }
+
   /** Motors off (neutral output). */
   void neutral();
 
