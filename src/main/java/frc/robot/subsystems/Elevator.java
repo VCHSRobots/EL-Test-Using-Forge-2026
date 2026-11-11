@@ -55,7 +55,7 @@ public class Elevator extends SubsystemBase {
     BOTH,
     RIGHT_ONLY,
     LEFT_ONLY,
-    /** Right motor runs the position loop; the left follows it (CTRE Follower, aligned). */
+    /** Right motor runs the position loop; the left follows it (CTRE Follower, opposed). */
     LEADER_FOLLOWER
   }
 

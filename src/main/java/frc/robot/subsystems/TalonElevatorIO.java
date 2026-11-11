@@ -40,7 +40,7 @@ public class TalonElevatorIO implements ElevatorIO {
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
     left = new TalonFX(unit.leftMotorId());
-    followRequest = new Follower(right.getDeviceID(), MotorAlignmentValue.Aligned);
+    followRequest = new Follower(right.getDeviceID(), MotorAlignmentValue.Opposed);
     configure(right, InvertedValue.CounterClockwise_Positive);
     configure(left, InvertedValue.Clockwise_Positive);
     right.setPosition(0);
@@ -99,7 +99,7 @@ public class TalonElevatorIO implements ElevatorIO {
     left.setControl(leftRequest.withPosition(rotations));
   }
 
-  /** Left follows right. Aligned: positive output is UP on both, each with its own invert. */
+  /** Left follows right. Opposed: the left motor is mounted mirrored (opposite invert), so it must turn opposite the right rotor. */
   @Override
   public void setLeaderFollower(double rotations) {
     right.setControl(rightRequest.withPosition(rotations));
