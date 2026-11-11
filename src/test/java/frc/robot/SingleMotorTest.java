@@ -15,6 +15,16 @@ class SingleMotorTest {
     boolean right;
     boolean left;
 
+    boolean follower;
+
+    @Override
+    public void setLeaderFollower(double rotations) {
+      follower = true;
+      right = true;
+      left = true;
+      setPosition(rotations);
+    }
+
     @Override
     public void setPosition(double rotations, boolean useRight, boolean useLeft) {
       right = useRight;
@@ -31,6 +41,12 @@ class SingleMotorTest {
       e.setDefaultCommand(e.followNetworkTables());
       scenario.enable();
       scenario.run(0.2);
+      assertTrue(io.follower && io.right && io.left);
+
+      e.setDrive(Elevator.Drive.BOTH);
+      io.follower = false;
+      scenario.run(0.1);
+      assertFalse(io.follower);
       assertTrue(io.right && io.left);
 
       e.setDrive(Elevator.Drive.RIGHT_ONLY);
@@ -45,7 +61,7 @@ class SingleMotorTest {
 
       scenario.disable();
       scenario.run(0.1);
-      assertEquals(Elevator.Drive.BOTH, e.drive());
+      assertEquals(Elevator.Drive.LEADER_FOLLOWER, e.drive());
     }
   }
 }

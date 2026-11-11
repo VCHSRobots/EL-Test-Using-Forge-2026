@@ -17,6 +17,14 @@ public interface ElevatorIO {
     setPosition(rotations);
   }
 
+  /**
+   * Right motor runs the position loop, left follows the right motor's output. Default for
+   * implementations with no follower mode: both run their own loop.
+   */
+  default void setLeaderFollower(double rotations) {
+    setPosition(rotations);
+  }
+
   /** Motors off (neutral output). */
   void neutral();
 
