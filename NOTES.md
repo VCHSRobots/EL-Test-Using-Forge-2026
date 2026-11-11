@@ -14,7 +14,7 @@ A WPILib 2026 Java command-based robot program for a roboRIO, team 4415. It buil
 - **Directions** (stated by the team): the right motor spinning counter-clockwise raises the carriage; the left motor clockwise raises it. So the right is `CounterClockwise_Positive`, the left `Clockwise_Positive`, and positive motor rotation is UP for both (`TalonElevatorIO`).
 - **Constants** (`Elevator`): 2.875 motor rotations per shaft turn, 4.0 in of chain per shaft turn (0.71875 motor rotations per inch), travel 9.5 in, zero = carriage on the bottom stop AT POWER-UP (no homing yet; always power up on the bottom stop).
 - **Control over NetworkTables**: `/Elevator/Control/TargetInches` (absolute, clamped to 0.25..9.25 in) and `/Elevator/Control/SpeedInPerSec` (default 1.0, clamped to 0..2). Status in `/Elevator/Status/PositionInches` and `SetpointInches`. The default command ramps a setpoint toward the target at that speed and both motors run a position loop on it. Only while enabled; on disable the target snaps to the current position, so enabling never jumps.
-- **Leader/follower** (default): the right motor runs the position loop and the left is a CTRE `Follower` of it (`MotorAlignmentValue.Aligned`: both inverts are set so positive output is UP on both). Added because with two independent loops the motors fought each other (left ~8 A, right ~3 A mean, right torque current to -20 A) although each alone carried the load equally. `driveMode` 3.
+- **Leader/follower** (default): the right motor runs the position loop and the left is a CTRE `Follower` of it (`MotorAlignmentValue.Opposed`: the motors are mounted mirrored and their inverts differ, so Aligned made them fight; see Status). Added because with two independent loops the motors fought each other (left ~8 A, right ~3 A mean, right torque current to -20 A) although each alone carried the load equally. `driveMode` 3.
 - **Single-motor test**: pad 0 buttons choose which motors run the position loop: A = leader/follower (default), Y = both independent loops, B = right only, X = left only. The other motor gets neutral output (brake mode) but is still read and logged, and `driveMode` (0 both, 1 right, 2 left, 3 leader/follower) is in the log. It resets to leader/follower on every disable. Used to check whether the two sides carry the load unevenly.
 - **Safety**: motor voltage capped at 3 V, stator and supply limits 20 A, Talon soft limits just inside the travel, and a latched fault (motors neutral until the next disable) if either motor lags the setpoint by more than 1 in for 0.25 s. kP = 6 V per motor rotation, no feedforward: first-test values, untuned on the real stand.
 - **Telemetry**: every loop `TalonElevatorIO` refreshes, at 100 Hz, per motor: position, velocity, motor volts, stator/supply/torque current, device and processor temperature, duty cycle, supply (bus) voltage, closed-loop error/reference/output and the fault fields. `Elevator` copies them into `@Logged` fields (`rightSupplyAmps`, `leftTorqueAmps`, ...), with battery volts, brownout, CAN utilisation, loop time and the pad's axis 1, so Epilogue writes them to NT and the WPILOG. Fault fields are bit masks stored as doubles.
@@ -56,3 +56,25 @@ This is the 2026 season: GradleRIO 2026.2.1 (`build.gradle`), `frcYear = '2026'`
 2. Set the GradleRIO version, `frcYear` and `projectYear` to the new year. Read the version from the Gradle plugin portal (`edu.wpi.first.GradleRIO`).
 3. Replace the vendordeps: `WPILibNewCommands.json` from the `allwpilib` tag of that release, and CTRE's `Phoenix6-frc<year>-latest.json` from `https://maven.ctr-electronics.com/release/com/ctre/phoenix6/latest/`. Delete the old Phoenix file. GradleRIO refuses a vendordep whose year is wrong, which is how you find any you missed.
 4. Run `./gradlew build`, then `--offline`. Fix what the new WPILib or Epilogue changed.
+
+## Status and next steps (end of the first hardware session, 2026-11-11)
+
+**Known (observed on the stand, build EL18 = `d70517b`):**
+- Independent position loops on both motors fought each other (uneven current, right torque current to -20 A), although each motor alone lifts the carriage at about 15 A.
+- Leader/follower with the left `Aligned` stalled: both motors at the 20 A limit, no motion, a squeal, the lag fault cut them (run `03b00bef`, build EL16 `d1891af`).
+- Leader/follower with the left `Opposed` works: the carriage followed a 30 s jog (up 5 s, hold, down 5 s, hold, up 3 s, down 3 s) to about 5.1 in and back to about 0.2 in, lagging the setpoint by at most 0.35 in. No squeal or strain was reported. The motors shared the load: each averaged about half of one motor's lifting current, left and right within about 1 A, peak 8.2 A (run `f2745d3b`).
+- Motion was **not smooth** (the director's observation). In the log the current swings 1 to 2 A (std) and velocity 0.2 to 0.6 rev/s while moving, on both motors together, so it comes from the shared command, not from the motors fighting. At rest the motors hold about +1.5 to +1.8 A. A second run was made for filming; it was not analysed.
+
+**Not known / not done:**
+- Why the motion is rough. Candidates (inference only): kP (6 V per rotation) too aggressive, no feedforward, the setpoint ramped in 20 ms steps, chain slack or backlash.
+- The 15 in travel in the Thing description versus 9.5 in here: the code uses 9.5 in. Confirm the real travel and the soft limits.
+- Homing: zero is wherever the carriage is at power-up (bottom stop). The PDH is not read by code yet.
+- Several jogs were only to 5 in; nothing has been run near the top.
+
+**Suggested next steps, in order:**
+1. Re-read run logs of the filmed jog and compare it with `f2745d3b` to see if the roughness repeats.
+2. Add gravity feedforward (kG, about the 1.5 to 2 A hold current) and kS, then lower kP and add a little kD; change one at a time and rerun the same jog.
+3. Try Motion Magic (or a trapezoid profile) on the leader instead of the 20 ms ramp, with a gentle acceleration limit.
+4. Check the chain tension and backlash by hand if the ripple stays.
+5. Confirm the travel, set soft limits to match, add a homing routine, then raise the 3 V and 20 A caps in steps.
+6. Leave the stand on the idle program when done.
