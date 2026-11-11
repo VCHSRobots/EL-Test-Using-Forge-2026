@@ -7,6 +7,7 @@ import edu.wpi.first.networktables.DoubleSubscriber;
 import edu.wpi.first.networktables.NetworkTable;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.wpilibj.DriverStation;
+import java.util.function.DoubleSupplier;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 
@@ -117,6 +118,20 @@ public class Elevator extends SubsystemBase {
     return run(this::stepFromNetworkTables).withName("ElevatorFollowNT");
   }
 
+  /**
+   * Joystick jog: axis (-1..1, positive = up) times {@link #DEFAULT_SPEED_IN_PER_SEC} moves the
+   * target; released holds position. The setpoint is still ramped at that speed limit.
+   */
+  public Command jog(DoubleSupplier axis) {
+    return run(() -> {
+          double a = MathUtil.applyDeadband(axis.getAsDouble(), 0.1);
+          speedInPerSec = DEFAULT_SPEED_IN_PER_SEC;
+          targetInches = clampToTravel(targetInches + a * speedInPerSec * 0.02);
+          step();
+        })
+        .withName("ElevatorJog");
+  }
+
   private void stepFromNetworkTables() {
     double nt = targetSub.get();
     if (!Double.isNaN(nt)) {
@@ -125,7 +140,10 @@ public class Elevator extends SubsystemBase {
     double speed = speedSub.get();
     speedInPerSec =
         Double.isNaN(speed) ? DEFAULT_SPEED_IN_PER_SEC : MathUtil.clamp(speed, 0.0, MAX_SPEED_IN_PER_SEC);
+    step();
+  }
 
+  private void step() {
     double step = speedInPerSec * 0.02;
     setpointInches += MathUtil.clamp(targetInches - setpointInches, -step, step);
 
