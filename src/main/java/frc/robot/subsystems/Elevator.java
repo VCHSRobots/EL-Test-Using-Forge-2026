@@ -50,13 +50,23 @@ public class Elevator extends SubsystemBase {
   public static final double SUPPLY_LIMIT_AMPS = 20.0;
   public static final double KP_VOLTS_PER_ROTATION = 6.0;
 
+  /** Which motors run the position loop. The others are in neutral but still logged. */
+  public enum Drive {
+    BOTH,
+    RIGHT_ONLY,
+    LEFT_ONLY
+  }
+
   private final ElevatorIO io;
+  private Drive drive = Drive.BOTH;
 
   private final DoubleSubscriber targetSub;
   private final DoubleSubscriber speedSub;
   private final DoublePublisher positionPub;
   private final DoublePublisher setpointPub;
 
+  /** 0 = both motors, 1 = right only, 2 = left only (for the log). */
+  double driveMode;
   double targetInches;
   double setpointInches;
   double speedInPerSec = DEFAULT_SPEED_IN_PER_SEC;
@@ -136,6 +146,15 @@ public class Elevator extends SubsystemBase {
         && Math.abs(positionInches() - targetInches) < 0.1;
   }
 
+  /** Choose which motors drive. Reset to BOTH on every disable. */
+  public void setDrive(Drive d) {
+    drive = d;
+  }
+
+  public Drive drive() {
+    return drive;
+  }
+
   /** Sets the target (clamped to the travel) from code. NetworkTables writes do the same. */
   public void setTarget(double inches) {
     targetInches = clampToTravel(inches);
@@ -183,7 +202,10 @@ public class Elevator extends SubsystemBase {
       io.neutral();
       return;
     }
-    io.setPosition(setpointInches * MOTOR_ROTATIONS_PER_INCH);
+    io.setPosition(
+        setpointInches * MOTOR_ROTATIONS_PER_INCH,
+        drive != Drive.LEFT_ONLY,
+        drive != Drive.RIGHT_ONLY);
   }
 
   @Override
@@ -236,6 +258,7 @@ public class Elevator extends SubsystemBase {
       targetInches = setpointInches;
       fault = false;
       faultTimer = 0;
+      drive = Drive.BOTH;
       io.neutral();
     } else {
       double worst =
@@ -245,6 +268,7 @@ public class Elevator extends SubsystemBase {
         fault = true;
       }
     }
+    driveMode = drive.ordinal();
     positionPub.set(positionInches());
     setpointPub.set(setpointInches);
   }
