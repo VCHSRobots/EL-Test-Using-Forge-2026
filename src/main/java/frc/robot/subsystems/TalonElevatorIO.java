@@ -1,5 +1,7 @@
 package frc.robot.subsystems;
 
+import com.ctre.phoenix6.BaseStatusSignal;
+import com.ctre.phoenix6.StatusSignal;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.NeutralOut;
 import com.ctre.phoenix6.controls.PositionVoltage;
@@ -26,6 +28,11 @@ public class TalonElevatorIO implements ElevatorIO {
   private double leftV;
   private double rightA;
   private double leftA;
+  private static final double LOG_HZ = 100.0;
+  private final StatusSignal<?>[] rightSignals;
+  private final StatusSignal<?>[] leftSignals;
+  private Extras rightX = Extras.ZERO;
+  private Extras leftX = Extras.ZERO;
 
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
@@ -34,6 +41,31 @@ public class TalonElevatorIO implements ElevatorIO {
     configure(left, InvertedValue.Clockwise_Positive);
     right.setPosition(0);
     left.setPosition(0);
+    rightSignals = signalsOf(right);
+    leftSignals = signalsOf(left);
+    BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, rightSignals);
+    BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, leftSignals);
+    right.optimizeBusUtilization();
+    left.optimizeBusUtilization();
+  }
+
+  /** Every signal read each loop. Order matters: see {@link #extrasOf}. */
+  private static StatusSignal<?>[] signalsOf(TalonFX m) {
+    return new StatusSignal<?>[] {
+      m.getPosition(), m.getMotorVoltage(), m.getStatorCurrent(), // 0-2
+      m.getVelocity(), m.getSupplyCurrent(), m.getTorqueCurrent(), // 3-5
+      m.getDeviceTemp(), m.getProcessorTemp(), m.getDutyCycle(), // 6-8
+      m.getSupplyVoltage(), m.getClosedLoopError(), m.getClosedLoopReference(), // 9-11
+      m.getClosedLoopOutput(), m.getFaultField(), m.getStickyFaultField() // 12-14
+    };
+  }
+
+  private static Extras extrasOf(StatusSignal<?>[] s) {
+    double[] v = new double[s.length];
+    for (int i = 0; i < s.length; i++) {
+      v[i] = s[i].getValueAsDouble();
+    }
+    return new Extras(v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14]);
   }
 
   private static void configure(TalonFX motor, InvertedValue direction) {
@@ -71,13 +103,20 @@ public class TalonElevatorIO implements ElevatorIO {
 
   @Override
   public void update() {
-    rightRot = right.getPosition().getValueAsDouble();
-    leftRot = left.getPosition().getValueAsDouble();
-    rightV = right.getMotorVoltage().getValueAsDouble();
-    leftV = left.getMotorVoltage().getValueAsDouble();
-    rightA = right.getStatorCurrent().getValueAsDouble();
-    leftA = left.getStatorCurrent().getValueAsDouble();
+    BaseStatusSignal.refreshAll(rightSignals);
+    BaseStatusSignal.refreshAll(leftSignals);
+    rightRot = rightSignals[0].getValueAsDouble();
+    leftRot = leftSignals[0].getValueAsDouble();
+    rightV = rightSignals[1].getValueAsDouble();
+    leftV = leftSignals[1].getValueAsDouble();
+    rightA = rightSignals[2].getValueAsDouble();
+    leftA = leftSignals[2].getValueAsDouble();
+    rightX = extrasOf(rightSignals);
+    leftX = extrasOf(leftSignals);
   }
+
+  @Override public Extras rightExtras() { return rightX; }
+  @Override public Extras leftExtras() { return leftX; }
 
   @Override public double rightRotations() { return rightRot; }
   @Override public double leftRotations() { return leftRot; }

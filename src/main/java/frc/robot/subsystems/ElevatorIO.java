@@ -26,4 +26,29 @@ public interface ElevatorIO {
   double rightStatorAmps();
 
   double leftStatorAmps();
+
+  /** Extra per-motor readings for logging only (all zero where an implementation has none). */
+  record Extras(
+      double velocityRps,
+      double supplyAmps,
+      double torqueAmps,
+      double deviceTempC,
+      double processorTempC,
+      double duty,
+      double supplyVolts,
+      double closedLoopError,
+      double closedLoopReference,
+      double closedLoopOutput,
+      double faultField,
+      double stickyFaultField) {
+    static final Extras ZERO = new Extras(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+
+  default Extras rightExtras() {
+    return Extras.ZERO;
+  }
+
+  default Extras leftExtras() {
+    return Extras.ZERO;
+  }
 }
