@@ -54,11 +54,13 @@ public class Elevator extends SubsystemBase {
   public enum Drive {
     BOTH,
     RIGHT_ONLY,
-    LEFT_ONLY
+    LEFT_ONLY,
+    /** Right motor runs the position loop; the left follows it (CTRE Follower, aligned). */
+    LEADER_FOLLOWER
   }
 
   private final ElevatorIO io;
-  private Drive drive = Drive.BOTH;
+  private Drive drive = Drive.LEADER_FOLLOWER;
 
   private final DoubleSubscriber targetSub;
   private final DoubleSubscriber speedSub;
@@ -146,7 +148,7 @@ public class Elevator extends SubsystemBase {
         && Math.abs(positionInches() - targetInches) < 0.1;
   }
 
-  /** Choose which motors drive. Reset to BOTH on every disable. */
+  /** Choose which motors drive. Reset to LEADER_FOLLOWER on every disable. */
   public void setDrive(Drive d) {
     drive = d;
   }
@@ -200,6 +202,10 @@ public class Elevator extends SubsystemBase {
 
     if (fault) {
       io.neutral();
+      return;
+    }
+    if (drive == Drive.LEADER_FOLLOWER) {
+      io.setLeaderFollower(setpointInches * MOTOR_ROTATIONS_PER_INCH);
       return;
     }
     io.setPosition(
@@ -258,7 +264,7 @@ public class Elevator extends SubsystemBase {
       targetInches = setpointInches;
       fault = false;
       faultTimer = 0;
-      drive = Drive.BOTH;
+      drive = Drive.LEADER_FOLLOWER;
       io.neutral();
     } else {
       double worst =

@@ -22,8 +22,10 @@ public class RobotContainer {
       // Moves only while enabled. Left stick Y on pad 0 jogs it at 1 in/s (forward = up).
       // NetworkTables control (elevator.followNetworkTables()) is not the default for now.
       edu.wpi.first.wpilibj.XboxController pad = new edu.wpi.first.wpilibj.XboxController(0);
-      // Single-motor test: A = both motors, B = right only, X = left only (back to both on disable).
+      // Single-motor test: A = leader/follower (default), Y = both independent, B = right only, X = left only (back to both on disable).
       new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 1)
+          .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.LEADER_FOLLOWER)));
+      new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 4)
           .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.BOTH)));
       new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 2)
           .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.RIGHT_ONLY)));

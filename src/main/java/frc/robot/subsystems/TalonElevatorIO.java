@@ -3,10 +3,12 @@ package frc.robot.subsystems;
 import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.StatusSignal;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
+import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.NeutralOut;
 import com.ctre.phoenix6.controls.PositionVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.InvertedValue;
+import com.ctre.phoenix6.signals.MotorAlignmentValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 import frc.robot.hardware.Unit;
 
@@ -21,6 +23,7 @@ public class TalonElevatorIO implements ElevatorIO {
   private final TalonFX left;
   private final PositionVoltage rightRequest = new PositionVoltage(0);
   private final PositionVoltage leftRequest = new PositionVoltage(0);
+  private final Follower followRequest;
   private final NeutralOut neutral = new NeutralOut();
   private double rightRot;
   private double leftRot;
@@ -37,6 +40,7 @@ public class TalonElevatorIO implements ElevatorIO {
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
     left = new TalonFX(unit.leftMotorId());
+    followRequest = new Follower(right.getDeviceID(), MotorAlignmentValue.Aligned);
     configure(right, InvertedValue.CounterClockwise_Positive);
     configure(left, InvertedValue.Clockwise_Positive);
     right.setPosition(0);
@@ -93,6 +97,13 @@ public class TalonElevatorIO implements ElevatorIO {
   public void setPosition(double rotations) {
     right.setControl(rightRequest.withPosition(rotations));
     left.setControl(leftRequest.withPosition(rotations));
+  }
+
+  /** Left follows right. Aligned: positive output is UP on both, each with its own invert. */
+  @Override
+  public void setLeaderFollower(double rotations) {
+    right.setControl(rightRequest.withPosition(rotations));
+    left.setControl(followRequest);
   }
 
   @Override
