@@ -1,0 +1,136 @@
+plugins {
+    id "java"
+    id "edu.wpi.first.GradleRIO" version "2026.2.1"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+def ROBOT_MAIN_CLASS = "frc.robot.Main"
+
+deploy {
+    targets {
+        roborio(getTargetTypeClass('RoboRIO')) {
+            team = project.frc.getTeamOrDefault(4415)
+            debug = project.frc.getDebugOrDefault(false)
+
+            artifacts {
+                frcJava(getArtifactTypeClass('FRCJavaArtifact')) {
+                }
+                frcStaticFileDeploy(getArtifactTypeClass('FileTreeArtifact')) {
+                    files = project.fileTree('src/main/deploy')
+                    directory = '/home/lvuser/deploy'
+                    deleteOldFiles = false
+                }
+            }
+        }
+    }
+}
+
+def deployArtifact = deploy.targets.roborio.artifacts.frcJava
+
+wpi.java.debugJni = false
+def includeDesktopSupport = true
+
+dependencies {
+    annotationProcessor wpi.java.deps.wpilibAnnotations()
+    implementation wpi.java.deps.wpilib()
+    implementation wpi.java.vendor.java()
+
+    roborioDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.roborio)
+    roborioDebug wpi.java.vendor.jniDebug(wpi.platforms.roborio)
+
+    roborioRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.roborio)
+    roborioRelease wpi.java.vendor.jniRelease(wpi.platforms.roborio)
+
+    nativeDebug wpi.java.deps.wpilibJniDebug(wpi.platforms.desktop)
+    nativeDebug wpi.java.vendor.jniDebug(wpi.platforms.desktop)
+    simulationDebug wpi.sim.enableDebug()
+
+    nativeRelease wpi.java.deps.wpilibJniRelease(wpi.platforms.desktop)
+    nativeRelease wpi.java.vendor.jniRelease(wpi.platforms.desktop)
+    simulationRelease wpi.sim.enableRelease()
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    systemProperty 'junit.jupiter.extensions.autodetection.enabled', 'true'
+    testLogging { events "passed", "skipped", "failed"; exceptionFormat "full" }
+}
+
+// The simulation GUI opens unless -Pheadless is given (Forge runs it headless).
+wpi.sim.addGui().defaultEnabled = !project.hasProperty("headless")
+wpi.sim.addDriverstation()
+
+// Build identity, written at compile time. `-Pprogram=idle` builds the idle program instead of
+// the robot program: same code, Main picks one from BuildConstants.PROGRAM.
+def forgeGenerated = layout.buildDirectory.dir("generated/sources/forge/java")
+def forgeProgram = (project.findProperty("program") ?: "robot").toString()
+if (!(forgeProgram in ["robot", "idle"])) {
+    throw new GradleException("-Pprogram must be robot or idle, not ${forgeProgram}")
+}
+
+def tasksBuildConstants = tasks.register("writeBuildConstants") {
+    description = "Writes BuildConstants.java: branch, commit, dirty tree, build time, builder."
+    def outDir = forgeGenerated
+    def root = projectDir
+    def program = forgeProgram
+    outputs.dir(outDir)
+    outputs.upToDateWhen { false } // the time and the tree's state change between builds
+    doLast {
+        def git = { List<String> args ->
+            try {
+                def proc = (["git"] + args).execute(null, root)
+                def out = proc.text.trim()
+                proc.waitFor()
+                return proc.exitValue() == 0 ? out : ""
+            } catch (Exception ignored) {
+                return ""
+            }
+        }
+        def remote = git(["remote", "get-url", "origin"])
+        def repository = remote.replaceAll(/\.git$/, "").replaceAll(/^.*github\.com[:\/]/, "")
+        def builder = System.getenv("FORGE_BUILDER") ?: System.getProperty("user.name") ?: ""
+        def values = [
+            REPOSITORY: repository,
+            BRANCH    : git(["rev-parse", "--abbrev-ref", "HEAD"]),
+            COMMIT    : git(["rev-parse", "HEAD"]),
+            BUILT_AT  : java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString(),
+            BUILDER   : builder,
+            PROGRAM   : program,
+        ]
+        def dirty = !git(["status", "--porcelain"]).isEmpty()
+        def quote = { String s -> '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"' }
+        def file = outDir.get().file("frc/robot/BuildConstants.java").asFile
+        file.parentFile.mkdirs()
+        def lines = ["package frc.robot;", "",
+                     "/** Written by the writeBuildConstants Gradle task at compile time. */",
+                     "public final class BuildConstants {"]
+        values.each { k, v -> lines << "  public static final String ${k} = ${quote(v)};".toString() }
+        lines << "  public static final boolean DIRTY = ${dirty};".toString()
+        lines << "" << "  private BuildConstants() {}" << "}" << ""
+        file.text = lines.join("\n")
+    }
+}
+sourceSets.main.java.srcDir(forgeGenerated)
+tasks.named("compileJava") { dependsOn tasksBuildConstants }
+
+jar {
+    from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+    from sourceSets.main.allSource
+    manifest edu.wpi.first.gradlerio.GradleRIOPlugin.javaManifest(ROBOT_MAIN_CLASS)
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+}
+
+deployArtifact.jarTask = jar
+wpi.java.configureExecutableTasks(jar)
+wpi.java.configureTestTasks(test)
+
+tasks.withType(JavaCompile) {
+    options.compilerArgs.add '-XDstringConcat=inline'
+}

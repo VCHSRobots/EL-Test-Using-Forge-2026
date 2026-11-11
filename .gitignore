@@ -1,0 +1,12 @@
+.gradle/
+build/
+bin/
+logs/
+*.wpilog
+simgui*.json
+networktables.json
+.vscode/
+.idea/
+*.iml
+.DS_Store
+ctre_sim/
