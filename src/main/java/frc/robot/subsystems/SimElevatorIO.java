@@ -27,22 +27,56 @@ public class SimElevatorIO implements ElevatorIO {
   private double volts;
   private boolean driving;
   private double targetRotations;
+  private double homeVolts;
+  private boolean homing;
+  /** Physical rotations that read as zero (the robot's idea of the bottom). */
+  private double zeroRotations;
+
+  /** Test hook: put the carriage physically at this height (inches above the real bottom stop). */
+  public void placeCarriage(double inches) {
+    sim.setState(inches * 0.0254, 0.0);
+  }
+
+  /** Test hook: the true height above the real bottom stop, in inches. */
+  public double physicalInches() {
+    return sim.getPositionMeters() / 0.0254;
+  }
+
+  private double physicalRotations() {
+    return physicalInches() * Elevator.MOTOR_ROTATIONS_PER_INCH;
+  }
+
+  @Override
+  public void zero() {
+    zeroRotations = physicalRotations();
+  }
+
+  @Override
+  public void homeDrive(double v) {
+    homing = true;
+    homeVolts = -Math.abs(v);
+    driving = false;
+  }
 
   @Override
   public void setPosition(double rotations) {
     targetRotations = rotations;
+    homing = false;
     driving = true;
   }
 
   @Override
   public void neutral() {
+    homing = false;
     driving = false;
   }
 
   @Override
   public void update() {
     volts =
-        driving
+        homing
+            ? homeVolts
+            : driving
             ? MathUtil.clamp(
                 Elevator.KP_VOLTS_PER_ROTATION * (targetRotations - rightRotations()),
                 -Elevator.PEAK_VOLTS,
@@ -54,7 +88,7 @@ public class SimElevatorIO implements ElevatorIO {
 
   @Override
   public double rightRotations() {
-    return sim.getPositionMeters() / 0.0254 * Elevator.MOTOR_ROTATIONS_PER_INCH;
+    return physicalRotations() - zeroRotations;
   }
 
   @Override public double leftRotations() { return rightRotations(); }
