@@ -39,6 +39,14 @@ public class Elevator extends SubsystemBase {
 
   // --- Motion and safety limits (first-test values; raise only with care) ---
   public static final double DEFAULT_SPEED_IN_PER_SEC = 1.0;
+  /** Stick control: full forward on the stick is this height above the bottom (director, 14 Nov). */
+  public static final double STICK_TOP_INCHES = 8.0;
+  /** The most the stick may move the carriage, in inches per second (the setpoint is ramped at it). */
+  public static final double STICK_SPEED_IN_PER_SEC = 2.0;
+  /** The stick axis (the first stick's Y; forward reads negative) and its port. */
+  public static final int STICK_PORT = 0;
+  public static final int STICK_AXIS = 1;
+  public static final double STICK_DEADBAND = 0.08;
   public static final double MAX_SPEED_IN_PER_SEC = 2.0;
   /** Stay this far from the stops: the target is clamped to [MARGIN, TRAVEL - MARGIN]. */
   public static final double STOP_MARGIN_INCHES = 0.25;
@@ -185,6 +193,31 @@ public class Elevator extends SubsystemBase {
         .withName("ElevatorJog");
   }
 
+  /**
+   * Stick height control: the stick (axis 1 of port 0, forward = up) sets the wanted height, 0 in
+   * when released and {@link #STICK_TOP_INCHES} at full forward. The carriage is assumed to be on
+   * the bottom stop whenever the robot is disabled (see {@link #periodic}), so it can only go up
+   * from there. The setpoint moves toward the wanted height at {@link #STICK_SPEED_IN_PER_SEC}.
+   * A missing pad reads as released, so the carriage goes down.
+   */
+  public Command followStick() {
+    return run(() -> {
+          double a = stickValue();
+          a = Math.abs(a) < STICK_DEADBAND ? 0.0 : a;
+          targetInches = MathUtil.clamp(-a, 0.0, 1.0) * STICK_TOP_INCHES;
+          speedInPerSec = STICK_SPEED_IN_PER_SEC;
+          step();
+        })
+        .withName("ElevatorFollowStick");
+  }
+
+  private static double stickValue() {
+    return DriverStation.isJoystickConnected(STICK_PORT)
+            && DriverStation.getStickAxisCount(STICK_PORT) > STICK_AXIS
+        ? DriverStation.getStickAxis(STICK_PORT, STICK_AXIS)
+        : 0.0;
+  }
+
   private void stepFromNetworkTables() {
     double nt = targetSub.get();
     if (!Double.isNaN(nt)) {
@@ -259,8 +292,13 @@ public class Elevator extends SubsystemBase {
 
     boolean enabled = DriverStation.isEnabled();
     if (!enabled) {
-      // Never jump on enable: hold the target and setpoint where the carriage is; clear a fault.
-      setpointInches = positionInches();
+      // The carriage is taken to be on the bottom stop whenever disabled: zero the encoders here,
+      // so every enable starts at 0 in. Hold the target and setpoint there (never jump on
+      // enable); clear a fault.
+      io.zero();
+      rightInches = 0.0;
+      leftInches = 0.0;
+      setpointInches = 0.0;
       targetInches = setpointInches;
       fault = false;
       faultTimer = 0;

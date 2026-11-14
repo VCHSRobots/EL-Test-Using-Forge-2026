@@ -25,6 +25,9 @@ public interface ElevatorIO {
     setPosition(rotations);
   }
 
+  /** Take the carriage to be at the bottom now: both positions read 0. Default: nothing to do. */
+  default void zero() {}
+
   /** Motors off (neutral output). */
   void neutral();
 

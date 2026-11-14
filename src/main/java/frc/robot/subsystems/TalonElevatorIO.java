@@ -121,6 +121,12 @@ public class TalonElevatorIO implements ElevatorIO {
   }
 
   @Override
+  public void zero() {
+    right.setPosition(0);
+    left.setPosition(0);
+  }
+
+  @Override
   public void neutral() {
     right.setControl(neutral);
     left.setControl(neutral);
