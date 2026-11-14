@@ -19,19 +19,20 @@ public class RobotContainer {
     this.unit = unit;
     if (unit.known()) {
       elevator = new Elevator(RobotBase.isSimulation() ? new SimElevatorIO() : new TalonElevatorIO(unit));
-      // Moves only while enabled. Left stick Y on pad 0 jogs it at 1 in/s (forward = up).
-      // NetworkTables control (elevator.followNetworkTables()) is not the default for now.
-      edu.wpi.first.wpilibj.XboxController pad = new edu.wpi.first.wpilibj.XboxController(0);
-      // Single-motor test: A = leader/follower (default), Y = both independent, B = right only, X = left only (back to both on disable).
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 1)
+      // Moves only while enabled. The stick on port 0, axis 1 sets the height: released = bottom,
+      // full forward = 8 in (see Elevator.followStick). Zero is wherever the carriage is while disabled.
+      elevator.setDefaultCommand(elevator.followStick());
+      // Single-motor test on a second pad (port 1), so a stick on port 0 never triggers it:
+      // A = leader/follower (default), Y = both independent, B = right only, X = left only.
+      edu.wpi.first.wpilibj.XboxController testPad = new edu.wpi.first.wpilibj.XboxController(1);
+      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 1)
           .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.LEADER_FOLLOWER)));
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 4)
+      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 4)
           .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.BOTH)));
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 2)
+      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 2)
           .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.RIGHT_ONLY)));
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(pad, 3)
+      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 3)
           .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.LEFT_ONLY)));
-      elevator.setDefaultCommand(elevator.jog(() -> -pad.getLeftY()));
     } else {
       elevator = null;
       DriverStation.reportWarning("Unknown unit " + unit.serial() + ": elevator not built", false);
