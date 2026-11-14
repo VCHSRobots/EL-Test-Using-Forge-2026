@@ -28,6 +28,20 @@ public interface ElevatorIO {
   /** Take the carriage to be at the bottom now: both positions read 0. Default: nothing to do. */
   default void zero() {}
 
+  /**
+   * Homing: drive both motors DOWN open loop at this many volts (positive number), the left
+   * following the right. Default: neutral (an implementation with no homing never moves).
+   */
+  default void homeDrive(double volts) {
+    neutral();
+  }
+
+  /**
+   * Allow the carriage to be driven below zero (the reverse soft limit off) while homing finds
+   * the real bottom; true restores the limit. Default: nothing to do.
+   */
+  default void setReverseLimitEnabled(boolean enabled) {}
+
   /** Motors off (neutral output). */
   void neutral();
 

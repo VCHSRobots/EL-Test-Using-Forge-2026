@@ -11,6 +11,7 @@ import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.Timer;
 import java.util.function.DoubleSupplier;
 import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.FunctionalCommand;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 
 /**
@@ -58,6 +59,21 @@ public class Elevator extends SubsystemBase {
   public static final double SUPPLY_LIMIT_AMPS = 20.0;
   public static final double KP_VOLTS_PER_ROTATION = 6.0;
 
+  // --- Auto-home (find the bottom hard stop by its stall) ---
+  /** Open-loop volts pushing DOWN while homing (ramped in over HOME_RAMP_SECONDS). */
+  public static final double HOME_VOLTS = 0.6;
+  public static final double HOME_RAMP_SECONDS = 0.3;
+  /** Ignore the stall test for this long after the start (spin-up current is not a stall). */
+  public static final double HOME_GRACE_SECONDS = 0.5;
+  /** Stalled = average stator current at least this ... */
+  public static final double HOME_STALL_AMPS = 6.0;
+  /** ... and speed below this (inches per second) ... */
+  public static final double HOME_STALL_SPEED_IN_PER_SEC = 0.3;
+  /** ... for this long in a row. */
+  public static final double HOME_STALL_SECONDS = 0.2;
+  /** Give up (no zero) after this long without a stall. */
+  public static final double HOME_TIMEOUT_SECONDS = 8.0;
+
   /** Which motors run the position loop. The others are in neutral but still logged. */
   public enum Drive {
     BOTH,
@@ -74,6 +90,7 @@ public class Elevator extends SubsystemBase {
   private final DoubleSubscriber speedSub;
   private final DoublePublisher positionPub;
   private final DoublePublisher setpointPub;
+  private final DoublePublisher homeOffsetPub;
 
   /** 0 = both motors, 1 = right only, 2 = left only (for the log). */
   double driveMode;
@@ -116,6 +133,18 @@ public class Elevator extends SubsystemBase {
   double canUtilization;
   boolean browningOut;
   double joystickAxis;
+  /** True while the homing command runs. */
+  boolean homing;
+  /** 0 never run, 1 running, 2 found the bottom, 3 timed out (no zero set), 4 interrupted. */
+  double homeStatus;
+  /** Where the bottom was found, in inches on the OLD zero (negative: below it). Last homing. */
+  double homeFoundInches;
+  double homeStallSeconds;
+  double homeSpeedInPerSec;
+  double homeAmps;
+  private double homeElapsed;
+  private double homeLastInches;
+  private boolean homeStalled;
   private double faultTimer;
   private double lastPeriodic = Timer.getFPGATimestamp();
 
@@ -131,6 +160,7 @@ public class Elevator extends SubsystemBase {
     NetworkTable status = NetworkTableInstance.getDefault().getTable("Elevator/Status");
     positionPub = status.getDoubleTopic("PositionInches").publish();
     setpointPub = status.getDoubleTopic("SetpointInches").publish();
+    homeOffsetPub = status.getDoubleTopic("HomeFoundInches").publish();
   }
 
   /** Current carriage height in inches (average of the two motors). */
@@ -144,6 +174,19 @@ public class Elevator extends SubsystemBase {
 
   public double targetInches() {
     return targetInches;
+  }
+
+  public boolean isHoming() {
+    return homing;
+  }
+
+  /** 0 never run, 1 running, 2 found the bottom, 3 timed out, 4 interrupted. */
+  public double homeStatus() {
+    return homeStatus;
+  }
+
+  public double homeFoundInches() {
+    return homeFoundInches;
   }
 
   public boolean faulted() {
@@ -209,6 +252,78 @@ public class Elevator extends SubsystemBase {
           step();
         })
         .withName("ElevatorFollowStick");
+  }
+
+  /**
+   * Auto-home: takes over the elevator, drives both motors DOWN at {@link #HOME_VOLTS} (low
+   * speed, low current) until the carriage stalls on the bottom hard stop (average stator
+   * current at least {@link #HOME_STALL_AMPS} while the speed is under {@link
+   * #HOME_STALL_SPEED_IN_PER_SEC}, for {@link #HOME_STALL_SECONDS}, never judged in the first
+   * {@link #HOME_GRACE_SECONDS}), then stops, makes that position 0 in, re-arms the soft limits
+   * and ends so the stick takes over again. On a timeout it sets no zero. The reverse soft limit
+   * is off while it runs, since the zero it replaces may be wrong. Disabling cancels it.
+   */
+  public Command autoHome() {
+    return new FunctionalCommand(
+            this::homeInit, this::homeStep, this::homeEnd, () -> homeStalled || homeElapsed >= HOME_TIMEOUT_SECONDS, this)
+        .withName("ElevatorAutoHome");
+  }
+
+  private void homeInit() {
+    homing = true;
+    homeStalled = false;
+    homeElapsed = 0.0;
+    homeStallSeconds = 0.0;
+    homeSpeedInPerSec = 0.0;
+    homeLastInches = positionInches();
+    homeStatus = 1;
+    fault = false;
+    faultTimer = 0;
+    drive = Drive.LEADER_FOLLOWER;
+    io.setReverseLimitEnabled(false);
+  }
+
+  private void homeStep() {
+    homeElapsed += 0.02;
+    double ramp = Math.min(1.0, homeElapsed / HOME_RAMP_SECONDS);
+    io.homeDrive(HOME_VOLTS * ramp);
+
+    // Speed from the position change, lightly filtered (the simulation has no velocity signal).
+    double now = positionInches();
+    double raw = (now - homeLastInches) / 0.02;
+    homeLastInches = now;
+    homeSpeedInPerSec += 0.25 * (raw - homeSpeedInPerSec);
+    homeAmps = (Math.abs(rightStatorAmps) + Math.abs(leftStatorAmps)) / 2.0;
+
+    boolean stalledNow =
+        homeElapsed >= HOME_GRACE_SECONDS
+            && homeAmps >= HOME_STALL_AMPS
+            && Math.abs(homeSpeedInPerSec) < HOME_STALL_SPEED_IN_PER_SEC;
+    homeStallSeconds = stalledNow ? homeStallSeconds + 0.02 : 0.0;
+    if (homeStallSeconds >= HOME_STALL_SECONDS) {
+      homeStalled = true;
+    }
+  }
+
+  private void homeEnd(boolean interrupted) {
+    io.neutral();
+    io.setReverseLimitEnabled(true);
+    homing = false;
+    if (interrupted) {
+      homeStatus = 4;
+    } else if (homeStalled) {
+      homeFoundInches = positionInches();
+      io.zero();
+      rightInches = 0.0;
+      leftInches = 0.0;
+      setpointInches = 0.0;
+      targetInches = 0.0;
+      homeStatus = 2;
+    } else {
+      homeStatus = 3;
+      DriverStation.reportWarning("Elevator auto-home timed out without a stall: zero not changed", false);
+    }
+    homeOffsetPub.set(homeFoundInches);
   }
 
   private static double stickValue() {
@@ -307,7 +422,7 @@ public class Elevator extends SubsystemBase {
     } else {
       double worst =
           Math.max(Math.abs(rightInches - setpointInches), Math.abs(leftInches - setpointInches));
-      faultTimer = worst > FAULT_ERROR_INCHES ? faultTimer + 0.02 : 0.0;
+      faultTimer = !homing && worst > FAULT_ERROR_INCHES ? faultTimer + 0.02 : 0.0;
       if (faultTimer >= FAULT_SECONDS) {
         fault = true;
       }

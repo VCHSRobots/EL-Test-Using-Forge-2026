@@ -2,10 +2,12 @@ package frc.robot.subsystems;
 
 import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.StatusSignal;
+import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.NeutralOut;
 import com.ctre.phoenix6.controls.PositionVoltage;
+import com.ctre.phoenix6.controls.VoltageOut;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.InvertedValue;
 import com.ctre.phoenix6.signals.MotorAlignmentValue;
@@ -25,6 +27,8 @@ public class TalonElevatorIO implements ElevatorIO {
   private final PositionVoltage leftRequest = new PositionVoltage(0);
   private final Follower followRequest;
   private final NeutralOut neutral = new NeutralOut();
+  private final VoltageOut homeRequest = new VoltageOut(0).withEnableFOC(false);
+  private final SoftwareLimitSwitchConfigs softLimits = new SoftwareLimitSwitchConfigs();
   private double rightRot;
   private double leftRot;
   private double rightV;
@@ -118,6 +122,26 @@ public class TalonElevatorIO implements ElevatorIO {
     } else {
       left.setControl(neutral);
     }
+  }
+
+  /** Open loop down at this many volts; the left follows the right (opposed), as in normal driving. */
+  @Override
+  public void homeDrive(double volts) {
+    right.setControl(homeRequest.withOutput(-volts));
+    left.setControl(followRequest);
+  }
+
+  /** Reverse soft limit off while homing (one blocking config write per motor, at most 50 ms each). */
+  @Override
+  public void setReverseLimitEnabled(boolean enabled) {
+    softLimits.ForwardSoftLimitEnable = true;
+    softLimits.ForwardSoftLimitThreshold =
+        (Elevator.TRAVEL_INCHES - Elevator.STOP_MARGIN_INCHES / 2) * Elevator.MOTOR_ROTATIONS_PER_INCH;
+    softLimits.ReverseSoftLimitEnable = enabled;
+    softLimits.ReverseSoftLimitThreshold =
+        -Elevator.STOP_MARGIN_INCHES / 2 * Elevator.MOTOR_ROTATIONS_PER_INCH;
+    right.getConfigurator().apply(softLimits, 0.05);
+    left.getConfigurator().apply(softLimits, 0.05);
   }
 
   @Override

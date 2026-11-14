@@ -22,6 +22,11 @@ public class RobotContainer {
       // Moves only while enabled. The stick on port 0, axis 1 sets the height: released = bottom,
       // full forward = 8 in (see Elevator.followStick). Zero is wherever the carriage is while disabled.
       elevator.setDefaultCommand(elevator.followStick());
+      // Button 1 (the trigger / A) on the stick: auto-home. It takes over, finds the bottom stop by
+      // its stall, zeroes there, and hands control back to the stick (see Elevator.autoHome).
+      new edu.wpi.first.wpilibj2.command.button.JoystickButton(
+              new edu.wpi.first.wpilibj.Joystick(Elevator.STICK_PORT), 1)
+          .onTrue(elevator.autoHome());
       // Single-motor test on a second pad (port 1), so a stick on port 0 never triggers it:
       // A = leader/follower (default), Y = both independent, B = right only, X = left only.
       edu.wpi.first.wpilibj.XboxController testPad = new edu.wpi.first.wpilibj.XboxController(1);
