@@ -2,7 +2,7 @@
 
 Written after the first long simulation session on the elevator stand. "Observed" means a log, a screenshot or a test showed it; "inferred" means we think so but did not prove it.
 
-> **Moved here on 15 Nov 2026** from `VCHSRobots/elevator`, which is now only the electronics bench device (lamp and LED). The PR numbers below (#5 to #8) are that repository's. The elevator code they describe has since been replaced by this repository's program (see `NOTES.md`); the lessons about the simulator, the station and the 3D model still apply. What changed since is under "Since then" at the end.
+> **Moved here on 15 Nov 2026** from `VCHSRobots/elevator` (renamed `VCHSRobots/bench-lamp-led` the same day), which is now only the electronics bench device (lamp and LED). The PR numbers below (#5 to #8) are that repository's. The elevator code they describe has since been replaced by this repository's program (see `NOTES.md`); the lessons about the simulator, the station and the 3D model still apply. What changed since is under "Since then" at the end.
 
 ## What was accomplished
 

@@ -8,7 +8,7 @@ A WPILib 2026 Java command-based robot program for a roboRIO, team 4415. It buil
 
 ## The elevator stand
 
-`VCHSRobots/EL-Test-Using-Forge-2026`: Started from the `VCHSRobots/elevator` template repository (without its bench-lamp code).
+`VCHSRobots/EL-Test-Using-Forge-2026`: Started from the `VCHSRobots/elevator` template repository (now renamed `VCHSRobots/bench-lamp-led`) (without its bench-lamp code).
 
 ### The mechanism (facts from the director; keep these here)
 
@@ -47,7 +47,7 @@ A WPILib 2026 Java command-based robot program for a roboRIO, team 4415. It buil
 - `subsystems/` holds one class per subsystem, each annotated `@Logged` so Epilogue logs its fields. `Elevator` is the only subsystem. `ElevatorView` publishes what AdvantageScope shows under `/Forge/Elevator/`: `Mechanism` (a Mechanism2d), `Components` (the carriage as a robot-relative Pose3d array) and `RobotPose` (always the origin; put it on the Robot row and `Components` on a Component row under it). Display only.
 - `assets/Robot_Forge/` is the stand's 3D model for AdvantageScope (`model.glb` the frame, `model_0.glb` the carriage, `config.json`); `assets/README.md` says how to make and show it. The carriage's place along the rails is still off: change `zeroedPosition` in `config.json` and `CARRIAGE_ORIGIN_AT_BOTTOM` in `ElevatorView` together.
 - `docs/sim-and-forge-lessons.md`: lessons from the first simulation sessions (simulator joysticks, the station harness, the 3D model). Read it before simulating or changing the model.
-- Repositories: all elevator-stand code lives here. `VCHSRobots/elevator` is a different, electronics-only bench device (lamp and LED) despite its name; the model and lessons above were moved here from it on 15 Nov 2026.
+- Repositories: all elevator-stand code lives here. `VCHSRobots/bench-lamp-led` (named `VCHSRobots/elevator` until 15 Nov 2026) is a different, electronics-only bench device (lamp and LED); the model and lessons above were moved here from it on 15 Nov 2026.
 - `src/test/java/frc/robot/` holds the scenario tests (`ElevatorScenarioTest`: auto-range from a wrong zero, a rejected travel, ranging on the first teleop enable, goal and default tuning moves with `Metrics`, Abort, the lag fault, the dance, routines by name, characterization staying off the stops, nothing moves disabled; `SimTraceTest` writes `build/sim-trace.csv`): `Scenario` enables the simulated Driver Station, runs the scheduler in 20 ms steps of simulated time, and the test asserts on the subsystems. Nothing here touches a real robot.
 
 ## Build identity
