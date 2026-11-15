@@ -27,7 +27,9 @@ import frc.robot.hardware.Unit;
  * <p>The two sides are geared differently (right 15T pinion, left 16T, both to 46T on the shaft),
  * so each Talon has its OWN SensorToMechanismRatio, its own motor rotations per inch. Both then
  * work in true INCHES, and each runs its own copy of every request (the same Motion Magic move, or
- * the same open-loop volts). No Follower: a follower copies the leader's volts, and with different
+ * the same open-loop volts). Only the right Talon has kP/kD (unless {@link Elevator#LEFT_FEEDBACK}):
+ * the left adds the feedforward, so two position loops never pull against each other through the
+ * gear slack. No Follower: a follower copies the leader's volts, and with different
  * gearing the same volts make the two motors fight. The right Talon's kV is scaled by {@link
  * Unit#rightKvScale()} (16/15), because it spins faster for the same carriage speed.
  */
@@ -54,8 +56,8 @@ public class TalonElevatorIO implements ElevatorIO {
     right = new TalonFX(unit.rightMotorId());
     left = new TalonFX(unit.leftMotorId());
     rightKvScale = unit.rightKvScale();
-    configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), rightKvScale);
-    configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), 1.0);
+    configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), rightKvScale, true);
+    configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), 1.0, Elevator.LEFT_FEEDBACK);
     right.setPosition(0);
     left.setPosition(0);
     rightSignals = signalsOf(right);
@@ -88,7 +90,8 @@ public class TalonElevatorIO implements ElevatorIO {
     return new Extras(v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14]);
   }
 
-  private static void configure(TalonFX motor, InvertedValue direction, double rotationsPerInch, double kvScale) {
+  private static void configure(
+      TalonFX motor, InvertedValue direction, double rotationsPerInch, double kvScale, boolean feedback) {
     var cfg = new TalonFXConfiguration();
     cfg.MotorOutput.Inverted = direction;
     cfg.MotorOutput.NeutralMode = NeutralModeValue.Brake;
@@ -100,7 +103,7 @@ public class TalonElevatorIO implements ElevatorIO {
     cfg.CurrentLimits.StatorCurrentLimitEnable = true;
     cfg.CurrentLimits.SupplyCurrentLimit = Elevator.DEFAULT_STATOR_AMPS;
     cfg.CurrentLimits.SupplyCurrentLimitEnable = true;
-    cfg.Slot0 = slot0(Elevator.DEFAULT_GAINS, kvScale);
+    cfg.Slot0 = slot0(Elevator.DEFAULT_GAINS, kvScale, feedback);
     cfg.MotionMagic = motionMagic(Elevator.DEFAULT_GAINS);
     // Until the travel is measured, soft limits assume zero is the bottom and nominal travel.
     cfg.SoftwareLimitSwitch.ForwardSoftLimitEnable = true;
@@ -111,8 +114,11 @@ public class TalonElevatorIO implements ElevatorIO {
     motor.getConfigurator().apply(cfg);
   }
 
-  /** Slot 0 from the gains; kV is for the 16T (left) motor and scaled by kvScale. */
-  private static Slot0Configs slot0(Gains g, double kvScale) {
+  /**
+   * Slot 0 from the gains; kV is for the 16T (left) motor and scaled by kvScale. Without feedback
+   * kP and kD are zero: the Talon follows the same Motion Magic move on feedforward alone.
+   */
+  private static Slot0Configs slot0(Gains g, double kvScale, boolean feedback) {
     var s = new Slot0Configs();
     s.GravityType = GravityTypeValue.Elevator_Static;
     s.StaticFeedforwardSign = StaticFeedforwardSignValue.UseVelocitySign;
@@ -120,8 +126,8 @@ public class TalonElevatorIO implements ElevatorIO {
     s.kG = g.kG();
     s.kV = g.kV() * kvScale;
     s.kA = g.kA();
-    s.kP = g.kP();
-    s.kD = g.kD();
+    s.kP = feedback ? g.kP() : 0.0;
+    s.kD = feedback ? g.kD() : 0.0;
     return s;
   }
 
@@ -135,9 +141,10 @@ public class TalonElevatorIO implements ElevatorIO {
 
   @Override
   public void applyGains(Gains g) {
-    // Both Talons run the loop: the same gains in inches, kV scaled for the right's gearing.
-    right.getConfigurator().apply(slot0(g, rightKvScale), CONFIG_TIMEOUT_S);
-    left.getConfigurator().apply(slot0(g, 1.0), CONFIG_TIMEOUT_S);
+    // Both Talons run the move: the same feedforward in inches, kV scaled for the right's gearing;
+    // kP and kD only on the right unless LEFT_FEEDBACK.
+    right.getConfigurator().apply(slot0(g, rightKvScale, true), CONFIG_TIMEOUT_S);
+    left.getConfigurator().apply(slot0(g, 1.0, Elevator.LEFT_FEEDBACK), CONFIG_TIMEOUT_S);
     for (TalonFX m : new TalonFX[] {right, left}) {
       m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
     }
