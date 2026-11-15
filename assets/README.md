@@ -5,7 +5,7 @@
 ## Files
 
 - `config.json`: the robot's name ("Forge"), how to turn and shift the body model so the robot's origin is at the centre of its frame on the floor (`rotations`, `position` in metres), and one entry per component. Forge maintains it; tell Forge when the CAD changes.
-- `model.glb`: the robot's body without the carriage. Committed (8.5 MB, repacked from CAD Assistant's output; see `docs/sim-and-forge-lessons.md`). Moved here from `VCHSRobots/elevator` on 15 Nov 2026.
+- `model.glb`: the robot's body without the carriage. Committed (8.5 MB, repacked from CAD Assistant's output; see `docs/sim-and-forge-lessons.md`). Moved here from `VCHSRobots/elevator` (now `VCHSRobots/bench-lamp-led`) on 15 Nov 2026.
 - `model_0.glb`: the carriage alone, exported in the same assembly coordinates as `model.glb`.
 
 `zeroedPosition` moves the carriage model so its origin is at the robot's origin; the program then moves it to its live place. It is the negative of `CARRIAGE_ORIGIN_AT_BOTTOM` in `src/main/java/frc/robot/subsystems/ElevatorView.java`, with the carriage exported at the bottom of travel; Forge keeps the two in step.
