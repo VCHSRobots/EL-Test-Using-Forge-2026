@@ -184,7 +184,8 @@ public class SimElevatorIO implements ElevatorIO {
   }
 
   private void step(double dt) {
-    double base = 0; // volts both Talons share (everything but the kV term)
+    double base = 0; // feedforward volts both Talons share (everything but the kV term)
+    double feedback = 0; // kP/kD volts, the right Talon's (and the left's if LEFT_FEEDBACK)
     if (mode == Mode.PROFILE) {
       // Both Talons start from the same state with the same limits, so one profile stands for both.
       double oldVel = ref.velocity;
@@ -193,9 +194,8 @@ public class SimElevatorIO implements ElevatorIO {
       Gains g = gains;
       base = g.kG()
           + g.kS() * Math.signum(ref.velocity)
-          + g.kA() * refAccel
-          + g.kP() * (ref.position - readInches())
-          + g.kD() * (ref.velocity - velInPerSec);
+          + g.kA() * refAccel;
+      feedback = g.kP() * (ref.position - readInches()) + g.kD() * (ref.velocity - velInPerSec);
     }
     double reading = readInches();
     double drive = 0; // newtons up, both motors
@@ -203,7 +203,8 @@ public class SimElevatorIO implements ElevatorIO {
       double v =
           switch (mode) {
             case VOLTS -> voltsCmd;
-            case PROFILE -> base + gains.kV() * kvScale[k] * ref.velocity;
+            case PROFILE -> base + gains.kV() * kvScale[k] * ref.velocity
+                + (k == RIGHT || Elevator.LEFT_FEEDBACK ? feedback : 0.0);
             default -> 0.0; // brake mode: the windings are shorted
           };
       // Soft limits: the Talon goes neutral (brake) in the blocked direction.

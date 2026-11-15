@@ -48,8 +48,17 @@ public class Elevator extends SubsystemBase {
 
   // --- Defaults (predicted from the motor data and EL21; to be measured, see NOTES.md) ---
   // kV is for the 16T (left) motor; the right Talon gets kV x 16/15 (Unit.rightKvScale).
+  // kP and kD act on the RIGHT motor only (see LEFT_FEEDBACK), so they are twice the old
+  // per-motor 4 V/in and 0.05 V/(in/s): the same total correction as when both motors had them.
   public static final ElevatorIO.Gains DEFAULT_GAINS =
-      new ElevatorIO.Gains(0.10, 0.15, 0.069, 0.0006, 4.0, 0.05, 10.0, 60.0, 0.0);
+      new ElevatorIO.Gains(0.10, 0.15, 0.069, 0.0006, 8.0, 0.10, 10.0, 60.0, 0.0);
+  /**
+   * Whether the left Talon runs kP/kD too. False: the left runs only the feedforward (kS, kG, kV,
+   * kA) of the same Motion Magic move, and the right alone corrects position. With both correcting
+   * (EL28), gear slack let the two encoders disagree by 0.02-0.1 in and the two P terms pulled
+   * against each other: right 3.1 A against left 1.1 A on moves, opposed 45% of the time holding.
+   */
+  public static final boolean LEFT_FEEDBACK = false;
   public static final double DEFAULT_PEAK_VOLTS = 3.0;
   public static final double DEFAULT_STATOR_AMPS = 20.0;
   /** Hard ceilings the tuning values can never exceed. */
