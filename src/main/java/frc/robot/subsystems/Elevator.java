@@ -2,6 +2,7 @@ package frc.robot.subsystems;
 
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.math.MathUtil;
+import edu.wpi.first.networktables.BooleanPublisher;
 import edu.wpi.first.networktables.BooleanSubscriber;
 import edu.wpi.first.networktables.DoublePublisher;
 import edu.wpi.first.networktables.IntegerPublisher;
@@ -23,9 +24,9 @@ import java.util.function.Supplier;
  * The two-motor elevator stand. Heights are inches above the bottom hard stop, found by
  * auto-range (bottom, then top) on the first enable after the program starts.
  *
- * <p>Moves are Motion Magic profiles run inside the right Talon at 1 kHz, with gravity (kG),
- * friction (kS), velocity (kV) and acceleration (kA) feedforward and a PD loop; the left motor
- * follows. Gains, profile limits and output caps are live-tunable under /Elevator/Tuning/ (applied
+ * <p>Moves are Motion Magic profiles run inside BOTH Talons at 1 kHz (each with its own gearing,
+ * the same move in inches), with gravity (kG), friction (kS), velocity (kV) and acceleration (kA)
+ * feedforward and a PD loop. Gains, profile limits and output caps are live-tunable under /Elevator/Tuning/ (applied
  * while disabled). Commanded heights always stay {@link #STOP_MARGIN_INCHES} inside the measured
  * travel, and the Talons' soft limits sit just inside the stops.
  *
@@ -35,11 +36,7 @@ import java.util.function.Supplier;
  */
 @Logged
 public class Elevator extends SubsystemBase {
-  // --- The stand (director, 11 and 15 Nov 2026) ---
-  public static final double MOTOR_ROTATIONS_PER_SHAFT_TURN = 46.0 / 16.0; // 16T pinion, 24T idler, 46T
-  public static final double INCHES_PER_SHAFT_TURN = 16 * 0.25; // #25 chain on a 16T sprocket
-  public static final double MOTOR_ROTATIONS_PER_INCH =
-      MOTOR_ROTATIONS_PER_SHAFT_TURN / INCHES_PER_SHAFT_TURN;
+  // --- The stand (director, 11 and 15 Nov 2026); the gearing is in hardware.Unit ---
   /** Measured stop to stop, +/- 0.25 in. Auto-range measures the real one. */
   public static final double NOMINAL_TRAVEL_INCHES = 9.375;
   /** Auto-range rejects a measured travel further than this from nominal. */
@@ -50,6 +47,7 @@ public class Elevator extends SubsystemBase {
   public static final double SOFT_LIMIT_MARGIN_INCHES = 0.10;
 
   // --- Defaults (predicted from the motor data and EL21; to be measured, see NOTES.md) ---
+  // kV is for the 16T (left) motor; the right Talon gets kV x 16/15 (Unit.rightKvScale).
   public static final ElevatorIO.Gains DEFAULT_GAINS =
       new ElevatorIO.Gains(0.10, 0.15, 0.069, 0.0006, 4.0, 0.05, 10.0, 60.0, 0.0);
   public static final double DEFAULT_PEAK_VOLTS = 3.0;
@@ -97,6 +95,8 @@ public class Elevator extends SubsystemBase {
   public static final double QUASI_MAX_VOLTS = 2.0;
   /** Open-loop phases end this far from either stop, then brake. */
   public static final double CHAR_GUARD_INCHES = 1.25;
+  /** Park: the move to the bottom of the range gives up waiting to settle after this long. */
+  public static final double PARK_SETTLE_SECONDS = 3.0;
 
   public enum RangeStatus { NEVER, RUNNING, DONE, FAILED, INTERRUPTED }
 
@@ -109,6 +109,7 @@ public class Elevator extends SubsystemBase {
   private final DoublePublisher positionPub;
   private final DoublePublisher targetPub;
   private final DoublePublisher travelPub;
+  private final BooleanPublisher parkedPub;
   private final ElevatorView view = new ElevatorView(NOMINAL_TRAVEL_INCHES);
   private final Map<String, Supplier<Command>> routines;
   private String lastRoutineRequest = "";
@@ -131,6 +132,7 @@ public class Elevator extends SubsystemBase {
   boolean fault;
   boolean aborted;
   boolean ranged;
+  boolean parked;
   boolean zeroKnown;
   RangeStatus rangeStatus = RangeStatus.NEVER;
   double travelInches = NOMINAL_TRAVEL_INCHES;
@@ -204,6 +206,8 @@ public class Elevator extends SubsystemBase {
     positionPub = status.getDoubleTopic("PositionInches").publish();
     targetPub = status.getDoubleTopic("TargetInches").publish();
     travelPub = status.getDoubleTopic("TravelInches").publish();
+    parkedPub = status.getBooleanTopic("Parked").publish();
+    parkedPub.set(false);
     routinePub.set("");
     routines =
         Map.of(
@@ -211,7 +215,8 @@ public class Elevator extends SubsystemBase {
             "moves", this::standardMoves,
             "quasistatic", this::quasistatic,
             "dynamic", this::dynamic,
-            "dance", this::dance);
+            "dance", this::dance,
+            "park", this::park);
   }
 
   // ---------------------------------------------------------------- queries
@@ -223,6 +228,7 @@ public class Elevator extends SubsystemBase {
   public RangeStatus rangeStatus() { return rangeStatus; }
   public double bottomFoundInches() { return bottomFoundInches; }
   public boolean faulted() { return fault; }
+  public boolean isParked() { return parked; }
   public boolean aborted() { return aborted; }
   public String mode() { return mode; }
   public Tuning tuning() { return tuning; }
@@ -339,6 +345,40 @@ public class Elevator extends SubsystemBase {
             () -> t.get() >= tuning.get("DanceSeconds"),
             this);
     return rangeIfNeeded().andThen(play).withName("ElevatorDance");
+  }
+
+  /**
+   * The end of a test: a profiled move to the bottom of the range (0.25 in above the stop), then
+   * the motors off (neutral, brake mode) and /Elevator/Status/Parked true, with a message on the
+   * Driver Station that it is safe to disable. It stays parked, ignoring the stick, until another
+   * routine or a stick button takes over or the robot is disabled. Scripts end with it, so the
+   * end of every test is the same and nothing moves after it.
+   */
+  public Command park() {
+    Command settle =
+        run(() -> {
+              mode = "park-move";
+              moveTo(lowInches());
+            })
+            .until(this::atTarget)
+            .withTimeout(PARK_SETTLE_SECONDS);
+    Command rest =
+        startRun(
+                () -> {
+                  parked = true;
+                  parkedPub.set(true);
+                  DriverStation.reportWarning(
+                      "Elevator test done: parked at the bottom, motors off. Safe to disable.", false);
+                },
+                () -> {
+                  mode = "parked";
+                  stop();
+                })
+            .finallyDo(() -> {
+              parked = false;
+              parkedPub.set(false);
+            });
+    return settle.andThen(rest).withName("ElevatorPark");
   }
 
   /** Runs auto-range first if the stops have not been found yet. */
@@ -625,7 +665,7 @@ public class Elevator extends SubsystemBase {
   private void readSensors() {
     rightInches = io.rightInches();
     leftInches = io.leftInches();
-    positionInches = rightInches; // the leader's encoder (the left reads differently; see NOTES.md)
+    positionInches = rightInches; // both encoders read true inches now; the right is the reference
     sideDiffInches = rightInches - leftInches;
     velocityInPerSec = io.velocityInPerSec();
     profileInches = io.profileInches();

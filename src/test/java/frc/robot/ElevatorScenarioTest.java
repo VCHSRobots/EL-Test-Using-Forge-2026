@@ -187,15 +187,17 @@ class ElevatorScenarioTest {
       double lowest = 99, highest = -99;
       sc.run(8.0); // auto-range first
       assertEquals(RangeStatus.DONE, e.rangeStatus());
-      for (int i = 0; i < 45 * 50; i++) {
+      for (int i = 0; i < 50 * 50 && !e.mode().startsWith("park"); i++) {
         sc.run(0.02);
         lowest = Math.min(lowest, e.positionInches());
         highest = Math.max(highest, e.positionInches());
       }
-      sc.run(2.0);
       assertTrue(lowest > 0.1, "lowest " + lowest);
       assertTrue(highest < e.travelInches() - 0.1, "highest " + highest);
-      assertEquals(e.lowInches(), e.positionInches(), 0.05);
+      // Then it parks: at the bottom of the range, motors off.
+      sc.run(3.0);
+      assertTrue(e.isParked());
+      assertTrue(e.positionInches() <= e.lowInches() + 0.05, "at " + e.positionInches());
       assertFalse(e.faulted());
     }
   }
@@ -232,6 +234,76 @@ class ElevatorScenarioTest {
       assertTrue(lowest > 0.05, "lowest " + lowest);
       assertTrue(highest < e.travelInches() - 0.05, "highest " + highest);
       assertFalse(e.faulted());
+    }
+  }
+
+  @Test
+  void bothMotorsShareTheLoadDespiteDifferentPinions() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO(); // right 15T, left 16T, like the stand
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      sc.disable();
+      e.tuning().set("CruiseInPerSec", 40);
+      e.tuning().set("AccelInPerSec2", 250);
+      e.tuning().set("PeakVolts", 12);
+      e.tuning().set("StatorAmps", 40);
+      sc.run(0.1);
+      sc.enable();
+      e.goTo(e.lowInches()).schedule();
+      sc.run(2.0);
+      e.goTo(e.highInches()).schedule();
+      double worstGap = 0, peak = 0;
+      for (int i = 0; i < 50; i++) {
+        sc.run(0.02);
+        worstGap = Math.max(worstGap, Math.abs(io.rightStatorAmps() - io.leftStatorAmps()));
+        peak = Math.max(peak, Math.max(Math.abs(io.rightStatorAmps()), Math.abs(io.leftStatorAmps())));
+      }
+      System.out.printf("fast move: peak %.2f A, worst right-left gap %.3f A%n", peak, worstGap);
+      // kV scaled 16/15 on the right: the same current in both, never pushing against each other.
+      assertTrue(worstGap < 0.05 * peak, "gap " + worstGap + " A of peak " + peak + " A");
+      assertEquals(e.highInches(), io.physicalInches(), 0.03);
+    }
+  }
+
+  @Test
+  void parkEndsATestAtTheBottomWithTheMotorsOff() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      var routine = NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine");
+      var parkedTopic = NetworkTableInstance.getDefault().getEntry("/Elevator/Status/Parked");
+      routine.setString("park");
+      sc.run(2.0);
+      assertTrue(e.isParked());
+      assertTrue(parkedTopic.getBoolean(false));
+      assertEquals(0.0, io.rightVolts(), 1e-9);
+      assertEquals(0.0, io.leftVolts(), 1e-9);
+      assertTrue(io.physicalInches() <= e.lowInches() + 0.05, "at " + io.physicalInches());
+      // Parked, the stick is ignored. With the motors off the carriage may settle the last
+      // 0.25 in onto the bottom stop under brake, slowly: never a drop.
+      stick(-1.0);
+      double fastestDown = 0;
+      for (int i = 0; i < 150; i++) {
+        sc.run(0.02);
+        fastestDown = Math.max(fastestDown, -io.physicalVelocity());
+      }
+      System.out.printf("parked: settled to %.3f in, fastest down %.3f in/s%n", io.physicalInches(), fastestDown);
+      assertTrue(e.isParked());
+      assertTrue(io.physicalInches() <= e.lowInches() + 0.05);
+      assertTrue(fastestDown < 1.0, "fastest down " + fastestDown);
+      stick(0.0);
+      // Another routine takes over and clears Parked.
+      routine.setString("moves");
+      sc.run(1.0);
+      assertFalse(e.isParked());
+      assertFalse(parkedTopic.getBoolean(true));
+      // Disabling also clears it.
+      routine.setString("park");
+      sc.run(7.0);
+      assertTrue(e.isParked());
+      sc.disable();
+      sc.run(0.1);
+      assertFalse(e.isParked());
     }
   }
 

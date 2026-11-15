@@ -23,7 +23,7 @@ public class RobotContainer {
   public RobotContainer(Unit unit) {
     this.unit = unit;
     if (unit.known()) {
-      elevator = new Elevator(RobotBase.isSimulation() ? new SimElevatorIO() : new TalonElevatorIO(unit));
+      elevator = new Elevator(RobotBase.isSimulation() ? new SimElevatorIO(unit) : new TalonElevatorIO(unit));
       // Teleop: the stick on port 0, axis 1 sets the height over the measured range.
       elevator.setDefaultCommand(elevator.followStick());
       // The first teleop enable after the program starts finds both stops (auto-range).
@@ -40,8 +40,8 @@ public class RobotContainer {
     }
   }
 
-  /** Autonomous: the dance (auto-range first if the stops are not known yet). */
+  /** Autonomous: the dance (auto-range first if the stops are not known yet), then park. */
   public Command autonomousCommand() {
-    return elevator == null ? Commands.none() : elevator.dance();
+    return elevator == null ? Commands.none() : elevator.dance().andThen(elevator.park());
   }
 }
