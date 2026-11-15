@@ -4,23 +4,37 @@ How this repository is organized and why. Forge reads this file before every cha
 
 ## What it is
 
-A WPILib 2026 Java command-based robot program for a roboRIO, team 4415. It builds, simulates and deploys with the standard WPILib tools (VS Code, or `./gradlew` with the WPILib installation) and depends on nothing from Forge. Phoenix 6 (26.3.0) is in `vendordeps/` for the CTRE devices (Kraken X60 motors on TalonFX).
+A WPILib 2026 Java command-based robot program for a roboRIO, team 4415. It builds, simulates and deploys with the standard WPILib tools (VS Code, or `./gradlew` with the WPILib installation) and depends on nothing from Forge. Phoenix 6 (26.3.0) is in `vendordeps/` for the CTRE devices (Kraken X44 motors on TalonFX).
 
 ## The elevator stand
 
-`VCHSRobots/EL-Test-Using-Forge-2026`: two Kraken X44 on a chain, one stage, 9.5 in of travel. Started from the `VCHSRobots/elevator` template repository (without its bench-lamp code).
+`VCHSRobots/EL-Test-Using-Forge-2026`: Started from the `VCHSRobots/elevator` template repository (without its bench-lamp code).
 
-- **Hardware map** (`hardware/KnownUnits`): roboRIO serial `031be686` (seen by the harness on 2026-11-11), right motor CAN 10, left motor CAN 11, PDH CAN 1 (the PDH is not used by code yet). An unknown serial builds no motors.
-- **Directions** (stated by the team): the right motor spinning counter-clockwise raises the carriage; the left motor clockwise raises it. So the right is `CounterClockwise_Positive`, the left `Clockwise_Positive`, and positive motor rotation is UP for both (`TalonElevatorIO`).
-- **Constants** (`Elevator`): 2.875 motor rotations per shaft turn, 4.0 in of chain per shaft turn (0.71875 motor rotations per inch), travel 9.5 in, zero = carriage on the bottom stop AT POWER-UP (no homing yet; always power up on the bottom stop).
-- **Stick control (default command, `followStick`)**: the stick on port 0, axis 1 (forward = up) sets the height: released = 0 in (bottom), full forward = 8 in (`STICK_TOP_INCHES`), deadband 0.08, the setpoint ramped at 2 in/s (`STICK_SPEED_IN_PER_SEC`). No limit switches: while the robot is DISABLED the encoders are re-zeroed every loop (`ElevatorIO.zero`), so every enable starts at 0 and the carriage is taken to be on the bottom stop (the stand's hard stops are harmless). A missing pad reads as released. The single-motor test buttons moved to a second pad on port 1. Tested in simulation only (`StickHeightTest`).
-- **Auto-home (`Elevator.autoHome`, stick button 1 on port 0)**: takes over, drives both motors DOWN open loop at 0.6 V (ramped in over 0.3 s; the left follows the right), with the reverse soft limit switched off (the zero it replaces may be wrong). The bottom hard stop is found by a stall: average stator current >= 6 A AND speed (from the position change, filtered) < 0.3 in/s for 0.2 s in a row, never judged in the first 0.5 s. Then neutral, the reverse soft limit back on, encoders zeroed (that position is 0 in), setpoint/target 0, and the command ends so `followStick` resumes. No stall within 8 s: no zero change, warning on the DS, `homeStatus` 3. Disabling cancels it (`homeStatus` 4). Logged: `homing`, `homeStatus` (0 idle, 1 running, 2 found, 3 timeout, 4 interrupted), `homeFoundInches` (where the bottom was on the old zero; also `/Elevator/Status/HomeFoundInches`), `homeStallSeconds`, `homeSpeedInPerSec`, `homeAmps`. The lag fault is not judged while homing. Thresholds are first guesses, untuned on the real stand. Tested in simulation only (`AutoHomeTest`).
-- **Control over NetworkTables**: `/Elevator/Control/TargetInches` (absolute, clamped to 0.25..9.25 in) and `/Elevator/Control/SpeedInPerSec` (default 1.0, clamped to 0..2). Status in `/Elevator/Status/PositionInches` and `SetpointInches`. The default command ramps a setpoint toward the target at that speed and both motors run a position loop on it. Only while enabled; on disable the target snaps to the current position, so enabling never jumps.
-- **Leader/follower** (default): the right motor runs the position loop and the left is a CTRE `Follower` of it (`MotorAlignmentValue.Opposed`: the motors are mounted mirrored and their inverts differ, so Aligned made them fight; see Status). Added because with two independent loops the motors fought each other (left ~8 A, right ~3 A mean, right torque current to -20 A) although each alone carried the load equally. `driveMode` 3.
-- **Single-motor test**: pad 0 buttons choose which motors run the position loop: A = leader/follower (default), Y = both independent loops, B = right only, X = left only. The other motor gets neutral output (brake mode) but is still read and logged, and `driveMode` (0 both, 1 right, 2 left, 3 leader/follower) is in the log. It resets to leader/follower on every disable. Used to check whether the two sides carry the load unevenly.
-- **Safety**: motor voltage capped at 3 V, stator and supply limits 20 A, Talon soft limits just inside the travel, and a latched fault (motors neutral until the next disable) if either motor lags the setpoint by more than 1 in for 0.25 s. kP = 6 V per motor rotation, no feedforward: first-test values, untuned on the real stand.
-- **Telemetry**: every loop `TalonElevatorIO` refreshes, at 100 Hz, per motor: position, velocity, motor volts, stator/supply/torque current, device and processor temperature, duty cycle, supply (bus) voltage, closed-loop error/reference/output and the fault fields. `Elevator` copies them into `@Logged` fields (`rightSupplyAmps`, `leftTorqueAmps`, ...), with battery volts, brownout, CAN utilisation, loop time and the pad's axis 1, so Epilogue writes them to NT and the WPILOG. Fault fields are bit masks stored as doubles.
-- **`ElevatorIO`**: `TalonElevatorIO` is the hardware, `SimElevatorIO` is plain Java physics used in simulation and tests (the CTRE simulator runs in wall-clock time and gave erratic results when the scenario steps faster than real time).
+### The mechanism (facts from the director; keep these here)
+
+- **One stage, 1:1**: the carriage moves exactly as far as the chain. Designed by Micah.
+- **Travel: 9.375 in +/- 0.25 in, stop to stop** (measured 15 Nov 2026; an earlier "about 9.5 in" and the old "15 in" are superseded). Zero is the bottom stop.
+- **Carriage: 3.959 lb by CAD, without the chains** (an earlier figure was 3.984 lb). Built of 1x2 in aluminium rectangular tube, 1/8 in wall.
+- **Drive**: two Kraken X44 drive **one shared shaft**, each through the same gears: 16T pinion -> 24T idler -> 46T on the shaft, so **2.875 motor turns per shaft turn**. Two #25 chains (0.25 in pitch) on 16T sprockets on that shaft, kept in step by it: **4.0 in per shaft turn**, so **0.71875 motor turns per inch** (1.391 in per motor turn). The motors and gears are at the bottom; the side with them is the back.
+- **Motors**: seen from the back, right motor CAN 10 on PDH channel 10, left motor CAN 11 on PDH channel 11, 40 A fuses. The right motor counter-clockwise raises the carriage, the left clockwise. PDH CAN 1, powered through a 120 A breaker; roboRIO 1 on PDH channel 22. CAN: roboRIO -> left -> right -> PDH (terminated).
+- **Hard stops** at both ends, thick metal: they can take any force the motors can apply, but **repeated banging will wear the mechanism**, so the code commands heights 0.25 in inside them and only touches them while ranging, gently. **No limit switches.**
+- **Goal** (15 Nov 2026): full travel in about 0.5 s, holding within about 0.02 in. Final use: drive it with a joystick, and an autonomous "dance" that runs for minutes.
+
+### How the code runs it
+
+- **Units**: both Talons have `SensorToMechanismRatio` = 0.71875, so the Talons, `ElevatorIO` and `Elevator` all work in **inches** (positions, in/s, soft limits, gains).
+- **Leader/follower**: the right motor runs every control request; the left is a CTRE `Follower`, `MotorAlignmentValue.Opposed` (mounted mirrored; `Aligned` made them fight, run `03b00bef`). Height is the right (leader) encoder; the left is logged too, with `sideDiffInches`.
+- **Moves: Motion Magic** (`MotionMagicVoltage`) on the leader at 1 kHz: trapezoid profile (cruise, acceleration, optional jerk), feedforward kS (velocity sign), kG (`Elevator_Static`), kV, kA, plus kP and kD. Every command asks for a height clamped to [0.25 in, travel - 0.25 in]; the Talons' soft limits sit 0.10 in inside each stop.
+- **Live tuning** (`Tuning`, `/Elevator/Tuning/`): kS, kG, kV, kA, kP, kD, CruiseInPerSec, AccelInPerSec2, JerkInPerSec3, PeakVolts, StatorAmps, DanceSeconds, DynamicVolts. Each is clamped to a range (ceilings: 12 V, 40 A, 60 in/s, 600 in/s^2) and written into the Talons **only while disabled** (config writes block), so a change takes effect at the next enable. The values in use are logged (`kS` ... `statorAmps`).
+- **Defaults** (`Elevator.DEFAULT_GAINS`, predicted, NOT measured): kS 0.10 V, kG 0.15 V, kV 0.069 V/(in/s), kA 0.0006 V/(in/s^2), kP 4 V/in, kD 0.05 V/(in/s), cruise 10 in/s, acceleration 60 in/s^2; caps 3 V and 20 A. kG and kV come from the Kraken X44 data and the carriage weight; kS from run EL21 (rough). With these a full move takes about 1.1 s in simulation (today's code: 4 s).
+- **Auto-range** (`autoRange`): runs by itself at the first teleop enable after the program starts (and in autonomous, before the dance), again on stick button 1, or as the routine `range`. (1) Creep down at 0.6 V until a stall (speed < 0.3 in/s and >= 6 A for 0.2 s); that is 0 in (`bottomFoundInches` = where it was on the old zero). (2) Motion Magic up to 1.25 in below the nominal top. (3) Creep up at 0.5 V until a stall (>= 8 A); that height is the travel if it is within 0.75 in of 9.375 in, else it fails and keeps the nominal travel (`rangeStatus` FAILED, a DS warning, no automatic retry). The soft limit in the searched direction is off while it searches. Then soft limits go just inside both stops, the stick and the dance span the measured range, and it holds just below the top. Disabling interrupts it (it runs again at the next teleop enable). The encoder zero stays valid while the Talons stay powered, so **nothing re-zeroes while disabled any more**.
+- **Teleop**: stick port 0, axis 1 (forward = up): released = bottom of the range (0.25 in), full forward = top of the range. Button 2 toggles the dance.
+- **Autonomous**: the dance (`Dance.BEATS`: bounces, a staircase, a shimmy, half bounces; heights as fractions of the measured range; ~20 s a pass) looped for `DanceSeconds` (default 180 s), then to the bottom of the range. It never asks for a height outside the range, so it never touches a stop. Its speed is the Motion Magic tuning.
+- **Routines for scripts**: write a name to `/Elevator/Control/Routine` while enabled: `range`, `moves` (1 -> 8 -> 4.5 -> 1 in, 1.5 s each), `quasistatic` (volts ramp 0.25 V/s up, then down, 1.25 in from the stops; gives kS, kG, kV), `dynamic` (a step of DynamicVolts up, then down; gives kA), `dance`. It runs when the name changes; write "" to run the same one again. `/Elevator/Status/Routine` is the running command, `RoutinesDone` counts finished ones, plus `PositionInches`, `TargetInches`, `TravelInches`.
+- **Safety**: `/Forge/Abort` true = neutral output for as long as it is true (`aborted`). A lag fault latches (neutral until disabled) if the height is more than 1 in from the Motion Magic reference for 0.25 s (judged only while profiling). Nothing moves while disabled; on disable the target becomes the current height.
+- **Telemetry**: as before, per motor at 100 Hz (position, velocity, volts, stator/supply/torque current, temperatures, duty, bus volts, closed-loop error/reference/output, faults), plus `mode`, `targetInches`, `profileInches`, `profileVelocityInPerSec`, `profileErrorInches`, `openLoopVolts`, `rangeStatus`, `travelInches`, `danceBeat`, `moveIndex`.
+- **Simulation** (`SimElevatorIO`): plain Java, deterministic, 1 kHz. It copies the Talon (Motion Magic trapezoid, the same feedforward and PD, soft limits, peak volts, a current limit, brake in neutral) and models two Kraken X44 (WPILib `DCMotor`) on the shaft, with gravity on the 3.959 lb carriage, 0.28 kg of chain (estimate), rotor inertia 1.5e-5 kg m^2 per motor (ESTIMATE), Coulomb friction worth 0.12 V (from EL21) and inelastic hard stops at a settable true travel. Replace the estimates with the characterization's numbers.
+- Removed in this version: the 20 ms setpoint ramp, the NetworkTables `TargetInches`/`SpeedInPerSec` control, zero-while-disabled, and the single-motor test pad (port 1).
 
 ## Layout
 
@@ -31,7 +45,7 @@ A WPILib 2026 Java command-based robot program for a roboRIO, team 4415. It buil
 - `forge/Identity.java` starts the WPILOG log (`DataLogManager`), reads the controller's serial, picks the unit, and publishes the identity (below).
 - `hardware/` holds the hardware map: `Unit` is what differs between two units running the same code (CAN IDs, inversions, offsets), and `KnownUnits` lists every physical unit by its roboRIO's serial. An unknown serial gives an unknown unit and a warning on the Driver Station.
 - `subsystems/` holds one class per subsystem, each annotated `@Logged` so Epilogue logs its fields. `Elevator` is the only subsystem.
-- `src/test/java/frc/robot/` (`ElevatorScenarioTest`: up 5 in at 1 in/s and back, clamping, nothing moves disabled) holds the scenario tests: `Scenario` enables the simulated Driver Station, runs the scheduler in 20 ms steps of simulated time, and the test asserts on the subsystems. Nothing here touches a real robot.
+- `src/test/java/frc/robot/` holds the scenario tests (`ElevatorScenarioTest`: auto-range from a wrong zero, a rejected travel, ranging on the first teleop enable, goal and default tuning moves with `Metrics`, Abort, the lag fault, the dance, routines by name, characterization staying off the stops, nothing moves disabled; `SimTraceTest` writes `build/sim-trace.csv`): `Scenario` enables the simulated Driver Station, runs the scheduler in 20 ms steps of simulated time, and the test asserts on the subsystems. Nothing here touches a real robot.
 
 ## Build identity
 
@@ -59,24 +73,15 @@ This is the 2026 season: GradleRIO 2026.2.1 (`build.gradle`), `frcYear = '2026'`
 3. Replace the vendordeps: `WPILibNewCommands.json` from the `allwpilib` tag of that release, and CTRE's `Phoenix6-frc<year>-latest.json` from `https://maven.ctr-electronics.com/release/com/ctre/phoenix6/latest/`. Delete the old Phoenix file. GradleRIO refuses a vendordep whose year is wrong, which is how you find any you missed.
 4. Run `./gradlew build`, then `--offline`. Fix what the new WPILib or Epilogue changed.
 
-## Status and next steps (end of the first hardware session, 2026-11-11)
+## Status and next steps (15 Nov 2026)
 
-**Known (observed on the stand, build EL18 = `d70517b`):**
-- Independent position loops on both motors fought each other (uneven current, right torque current to -20 A), although each motor alone lifts the carriage at about 15 A.
-- Leader/follower with the left `Aligned` stalled: both motors at the 20 A limit, no motion, a squeal, the lag fault cut them (run `03b00bef`, build EL16 `d1891af`).
-- Leader/follower with the left `Opposed` works: the carriage followed a 30 s jog (up 5 s, hold, down 5 s, hold, up 3 s, down 3 s) to about 5.1 in and back to about 0.2 in, lagging the setpoint by at most 0.35 in. No squeal or strain was reported. The motors shared the load: each averaged about half of one motor's lifting current, left and right within about 1 A, peak 8.2 A (run `f2745d3b`).
-- Motion was **not smooth** (the director's observation). In the log the current swings 1 to 2 A (std) and velocity 0.2 to 0.6 rev/s while moving, on both motors together, so it comes from the shared command, not from the motors fighting. At rest the motors hold about +1.5 to +1.8 A. A second run was made for filming; it was not analysed.
+**Observed on the stand before this version** (EL18-EL22): leader/follower Opposed works; P-only moves at 2 in/s used ~0.41 V up, ~-0.16 V down, ~0.22 V holding; holding error 0.05 in mean, 0.12 in worst; the right encoder reads more than the left by ~0.06 in per inch of height (0.46 in at 7.5 in, back to ~0 at the bottom; cause unknown, both motors are on one shaft); the one auto-home (EL22) found the bottom 0.97 in below the disabled zero.
 
-**Not known / not done:**
-- Why the motion is rough. Candidates (inference only): kP (6 V per rotation) too aggressive, no feedforward, the setpoint ramped in 20 ms steps, chain slack or backlash.
-- The 15 in travel in the Thing description versus 9.5 in here: the code uses 9.5 in. Confirm the real travel and the soft limits.
-- Homing: zero is wherever the carriage is at power-up (bottom stop). The PDH is not read by code yet.
-- Several jogs were only to 5 in; nothing has been run near the top.
+**Simulation only (this version, not yet on the stand)**: default tuning moves 0.25 -> 9.1 in in 1.06 s, peak 10 in/s; goal tuning (40 in/s, 250 in/s^2, 12 V, 40 A) settles within 0.02 in in 0.40 s, peak ~3.1 V and ~10 A a motor, no overshoot. The simulation has no chain slack or backlash, so the real stand will do worse.
 
-**Suggested next steps, in order:**
-1. Re-read run logs of the filmed jog and compare it with `f2745d3b` to see if the roughness repeats.
-2. Add gravity feedforward (kG, about the 1.5 to 2 A hold current) and kS, then lower kP and add a little kD; change one at a time and rerun the same jog.
-3. Try Motion Magic (or a trapezoid profile) on the leader instead of the 20 ms ramp, with a gentle acceleration limit.
-4. Check the chain tension and backlash by hand if the ripple stays.
-5. Confirm the travel, set soft limits to match, add a homing routine, then raise the 3 V and 20 A caps in steps.
-6. Leave the stand on the idle program when done.
+**Next, on the stand** (each with the person's enable, scripts with limits):
+1. Auto-range 3-5 times: bottom and top repeat within 0.02 in? Does the measured travel match 9.375 in (checks the 4.0 in per shaft turn)?
+2. `quasistatic` and `dynamic`: fit kS, kG, kV, kA; put them in the defaults and in `SimElevatorIO`.
+3. Sweep kP/kD on `moves`; then raise cruise/acceleration, then caps (3 -> 6 -> 12 V, 20 -> 40 A), only after clean steps.
+4. Find out the left/right encoder difference (a tilt, a slipping set screw, a chain skipping?).
+5. Run the dance for minutes; watch temperatures.
