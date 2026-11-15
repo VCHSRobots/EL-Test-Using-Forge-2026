@@ -3,6 +3,8 @@ package frc.robot.subsystems;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.system.plant.DCMotor;
 import edu.wpi.first.math.trajectory.TrapezoidProfile;
+import frc.robot.hardware.KnownUnits;
+import frc.robot.hardware.Unit;
 
 /**
  * Plain-Java stand-in for the two Talons and the stand: a 1 kHz copy of what the Talon does
@@ -10,6 +12,9 @@ import edu.wpi.first.math.trajectory.TrapezoidProfile;
  * current limit) driving a physics model of two Kraken X44 on one shaft, with gravity, Coulomb
  * friction and inelastic hard stops at the TRUE travel. Deterministic, so scenario tests can run
  * it faster than real time (the CTRE simulator cannot).
+ *
+ * <p>Each motor has its own gearing from the {@link Unit} (the stand: right 15T, left 16T pinion,
+ * both to 46T), and each "Talon" runs its own loop with its own kV, like {@link TalonElevatorIO}.
  *
  * <p>The physical constants are the stand's (15 Nov 2026): carriage 3.959 lb by CAD, travel 9.375
  * in. The friction, chain mass and rotor inertia are estimates, to be replaced by measured values.
@@ -30,13 +35,16 @@ public class SimElevatorIO implements ElevatorIO {
   public static final double FRICTION_VOLTS = 0.12;
 
   private static final DCMotor MOTOR = DCMotor.getKrakenX44(1);
-  /** Motor radians per inch of carriage travel. */
-  private static final double RAD_PER_IN = Elevator.MOTOR_ROTATIONS_PER_INCH * 2 * Math.PI;
-  /** Newtons on the carriage per newton-metre of motor torque (one motor). */
-  private static final double N_PER_NM = RAD_PER_IN / M_PER_IN;
-  private static final double EFFECTIVE_KG =
-      CARRIAGE_KG + CHAIN_KG + 2 * ROTOR_KG_M2 * N_PER_NM * N_PER_NM;
-  private static final double FRICTION_N = 2 * MOTOR.KtNMPerAmp * (FRICTION_VOLTS / MOTOR.rOhms) * N_PER_NM;
+  private static final int RIGHT = 0;
+  private static final int LEFT = 1;
+  /** Motor radians per inch of carriage travel, right and left. */
+  private final double[] radPerIn = new double[2];
+  /** Newtons on the carriage per newton-metre of motor torque, right and left. */
+  private final double[] nPerNm = new double[2];
+  /** Each Talon's kV multiplier (the right's is 16/15 on the stand). */
+  private final double[] kvScale = new double[2];
+  private final double effectiveKg;
+  private final double frictionN;
 
   private enum Mode { NEUTRAL, VOLTS, PROFILE }
 
@@ -59,9 +67,30 @@ public class SimElevatorIO implements ElevatorIO {
   private double fwdLimit = Elevator.NOMINAL_TRAVEL_INCHES - Elevator.SOFT_LIMIT_MARGIN_INCHES;
   private boolean revOn = true;
   private boolean fwdOn = true;
-  // --- last outputs ---
-  private double appliedVolts;
-  private double amps;
+  // --- last outputs, right and left ---
+  private final double[] appliedVolts = new double[2];
+  private final double[] amps = new double[2];
+
+  /** A simulated stand geared like the real one. */
+  public SimElevatorIO() {
+    this(KnownUnits.SIMULATION);
+  }
+
+  public SimElevatorIO(Unit unit) {
+    radPerIn[RIGHT] = unit.rightRotationsPerInch() * 2 * Math.PI;
+    radPerIn[LEFT] = unit.leftRotationsPerInch() * 2 * Math.PI;
+    kvScale[RIGHT] = unit.rightKvScale();
+    kvScale[LEFT] = 1.0;
+    double inertia = 0;
+    double friction = 0;
+    for (int k = 0; k < 2; k++) {
+      nPerNm[k] = radPerIn[k] / M_PER_IN;
+      inertia += ROTOR_KG_M2 * nPerNm[k] * nPerNm[k];
+      friction += MOTOR.KtNMPerAmp * (FRICTION_VOLTS / MOTOR.rOhms) * nPerNm[k];
+    }
+    effectiveKg = CARRIAGE_KG + CHAIN_KG + inertia;
+    frictionN = friction;
+  }
 
   private static TrapezoidProfile profileOf(Gains g) {
     return new TrapezoidProfile(new TrapezoidProfile.Constraints(g.cruiseInPerSec(), g.accelInPerSec2()));
@@ -155,55 +184,59 @@ public class SimElevatorIO implements ElevatorIO {
   }
 
   private void step(double dt) {
-    double v;
-    switch (mode) {
-      case VOLTS -> v = voltsCmd;
-      case PROFILE -> {
-        double oldVel = ref.velocity;
-        ref = profile.calculate(dt, ref, new TrapezoidProfile.State(goalIn, 0));
-        refAccel = (ref.velocity - oldVel) / dt;
-        Gains g = gains;
-        v = g.kG()
-            + g.kS() * Math.signum(ref.velocity)
-            + g.kV() * ref.velocity
-            + g.kA() * refAccel
-            + g.kP() * (ref.position - readInches())
-            + g.kD() * (ref.velocity - velInPerSec);
-      }
-      default -> v = 0.0; // brake mode: the windings are shorted
+    double base = 0; // volts both Talons share (everything but the kV term)
+    if (mode == Mode.PROFILE) {
+      // Both Talons start from the same state with the same limits, so one profile stands for both.
+      double oldVel = ref.velocity;
+      ref = profile.calculate(dt, ref, new TrapezoidProfile.State(goalIn, 0));
+      refAccel = (ref.velocity - oldVel) / dt;
+      Gains g = gains;
+      base = g.kG()
+          + g.kS() * Math.signum(ref.velocity)
+          + g.kA() * refAccel
+          + g.kP() * (ref.position - readInches())
+          + g.kD() * (ref.velocity - velInPerSec);
     }
-    // Soft limits: the Talon goes neutral (brake) in the blocked direction.
     double reading = readInches();
-    if ((fwdOn && reading >= fwdLimit && v > 0) || (revOn && reading <= revLimit && v < 0)) {
-      v = 0.0;
+    double drive = 0; // newtons up, both motors
+    for (int k = 0; k < 2; k++) {
+      double v =
+          switch (mode) {
+            case VOLTS -> voltsCmd;
+            case PROFILE -> base + gains.kV() * kvScale[k] * ref.velocity;
+            default -> 0.0; // brake mode: the windings are shorted
+          };
+      // Soft limits: the Talon goes neutral (brake) in the blocked direction.
+      if ((fwdOn && reading >= fwdLimit && v > 0) || (revOn && reading <= revLimit && v < 0)) {
+        v = 0.0;
+      }
+      v = MathUtil.clamp(v, -peakVolts, peakVolts);
+      // Motor current, limited like the stator limit (the Talon cuts the voltage to hold it).
+      double omega = velInPerSec * radPerIn[k];
+      double i = (v - omega / MOTOR.KvRadPerSecPerVolt) / MOTOR.rOhms;
+      i = MathUtil.clamp(i, -statorAmps, statorAmps);
+      appliedVolts[k] = i * MOTOR.rOhms + omega / MOTOR.KvRadPerSecPerVolt;
+      amps[k] = i;
+      drive += MOTOR.KtNMPerAmp * i * nPerNm[k];
     }
-    v = MathUtil.clamp(v, -peakVolts, peakVolts);
 
-    // Motor current, limited like the stator limit (the Talon cuts the voltage to hold it).
-    double omega = velInPerSec * RAD_PER_IN;
-    double i = (v - omega / MOTOR.KvRadPerSecPerVolt) / MOTOR.rOhms;
-    i = MathUtil.clamp(i, -statorAmps, statorAmps);
-    appliedVolts = i * MOTOR.rOhms + omega / MOTOR.KvRadPerSecPerVolt;
-    amps = i;
-
-    double drive = 2 * MOTOR.KtNMPerAmp * i * N_PER_NM; // both motors, newtons up
     double net = drive - CARRIAGE_KG * G;
     if (Math.abs(velInPerSec) < 1e-3) {
       // Static friction holds it unless the net force beats it.
-      if (Math.abs(net) <= FRICTION_N) {
+      if (Math.abs(net) <= frictionN) {
         net = 0;
         velInPerSec = 0;
       } else {
-        net -= Math.signum(net) * FRICTION_N;
+        net -= Math.signum(net) * frictionN;
       }
     } else {
-      net -= Math.signum(velInPerSec) * FRICTION_N;
+      net -= Math.signum(velInPerSec) * frictionN;
     }
-    double accelInPerSec2 = net / EFFECTIVE_KG / M_PER_IN;
+    double accelInPerSec2 = net / effectiveKg / M_PER_IN;
     double newVel = velInPerSec + accelInPerSec2 * dt;
     // Kinetic friction never reverses the motion within a step.
     if (velInPerSec != 0 && Math.signum(newVel) != Math.signum(velInPerSec)
-        && Math.abs(drive - CARRIAGE_KG * G) <= FRICTION_N) {
+        && Math.abs(drive - CARRIAGE_KG * G) <= frictionN) {
       newVel = 0;
     }
     velInPerSec = newVel;
@@ -223,8 +256,8 @@ public class SimElevatorIO implements ElevatorIO {
   @Override public double velocityInPerSec() { return velInPerSec; }
   @Override public double profileInches() { return mode == Mode.PROFILE ? ref.position : Double.NaN; }
   @Override public double profileVelocityInPerSec() { return mode == Mode.PROFILE ? ref.velocity : Double.NaN; }
-  @Override public double rightVolts() { return appliedVolts; }
-  @Override public double leftVolts() { return appliedVolts; }
-  @Override public double rightStatorAmps() { return amps; }
-  @Override public double leftStatorAmps() { return amps; }
+  @Override public double rightVolts() { return appliedVolts[RIGHT]; }
+  @Override public double leftVolts() { return appliedVolts[LEFT]; }
+  @Override public double rightStatorAmps() { return amps[RIGHT]; }
+  @Override public double leftStatorAmps() { return amps[LEFT]; }
 }

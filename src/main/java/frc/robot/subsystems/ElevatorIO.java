@@ -3,7 +3,7 @@ package frc.robot.subsystems;
 /**
  * What the Elevator needs from its two motors. Everything is in INCHES of carriage travel (up
  * positive) and volts; the implementations convert to motor rotations. {@link TalonElevatorIO} is
- * the real hardware (the right motor leads, the left follows it); {@link SimElevatorIO} is plain
+ * the real hardware (each motor runs its own loop with its own gearing); {@link SimElevatorIO} is plain
  * Java physics for simulation and tests.
  */
 public interface ElevatorIO {
@@ -51,7 +51,7 @@ public interface ElevatorIO {
 
   double leftInches();
 
-  /** Carriage speed from the leader, in/s (up positive). */
+  /** Carriage speed from the right motor, in/s (up positive). */
   double velocityInPerSec();
 
   /** The profile's current position (Motion Magic reference), inches; NaN when not profiling. */
