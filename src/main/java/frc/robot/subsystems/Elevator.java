@@ -109,6 +109,7 @@ public class Elevator extends SubsystemBase {
   private final DoublePublisher positionPub;
   private final DoublePublisher targetPub;
   private final DoublePublisher travelPub;
+  private final ElevatorView view = new ElevatorView(NOMINAL_TRAVEL_INCHES);
   private final Map<String, Supplier<Command>> routines;
   private String lastRoutineRequest = "";
   private long routinesDone;
@@ -586,6 +587,7 @@ public class Elevator extends SubsystemBase {
     positionPub.set(positionInches);
     targetPub.set(targetInches);
     travelPub.set(travelInches);
+    view.update(positionInches);
     routinePub.set(getCurrentCommand() == null ? "" : getCurrentCommand().getName());
   }
 
