@@ -5,65 +5,246 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import edu.wpi.first.networktables.NetworkTableInstance;
-import frc.robot.subsystems.SimElevatorIO;
+import edu.wpi.first.wpilibj.simulation.DriverStationSim;
+import edu.wpi.first.wpilibj2.command.Command;
+import frc.robot.hardware.KnownUnits;
 import frc.robot.subsystems.Elevator;
+import frc.robot.subsystems.Elevator.RangeStatus;
+import frc.robot.subsystems.SimElevatorIO;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+/** Scenario tests of the elevator on the simulated stand (nothing here touches a real robot). */
 class ElevatorScenarioTest {
-  private static void setTarget(double inches) {
-    NetworkTableInstance.getDefault().getEntry("/Elevator/Control/TargetInches").setDouble(inches);
+  private static void stick(double axis1) {
+    DriverStationSim.setJoystickAxisCount(0, 4);
+    DriverStationSim.setJoystickAxis(0, 1, axis1);
+    DriverStationSim.notifyNewData();
   }
 
-  private static Elevator build() {
-    Elevator e = new Elevator(new SimElevatorIO());
-    e.setDefaultCommand(e.followNetworkTables());
+  private static void abort(boolean on) {
+    NetworkTableInstance.getDefault().getEntry("/Forge/Abort").setBoolean(on);
+  }
+
+  @AfterEach
+  void clear() {
+    abort(false);
+    NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine").setString("");
+  }
+
+  /** Builds an elevator on a simulated stand and runs auto-range once from a wrong zero. */
+  private static Elevator ranged(Scenario sc, SimElevatorIO io, double trueTravel) {
+    io.setTrueTravel(trueTravel);
+    io.placeCarriage(3.0);
+    io.setPositionInches(0); // like a Talon at power-up: the robot thinks this is zero
+    Elevator e = new Elevator(io);
+    e.setDefaultCommand(e.hold());
+    sc.run(0.2);
+    sc.enable();
+    e.autoRange().schedule();
+    sc.run(8.0);
     return e;
   }
 
   @Test
-  void goesUpFiveInchesAtOneInchPerSecondAndBackDown() {
-    try (Scenario scenario = Scenario.start()) {
-      Elevator e = build();
-      scenario.run(0.2);
-      scenario.enable();
-      scenario.run(0.1);
-      // First let it settle at the bottom margin, then ask for 5 in.
-      scenario.run(1.0);
-      double start = e.setpointInches();
-      setTarget(5.0);
-      scenario.run(2.0);
-      // After 2 s the setpoint has moved 2 in (1 in/s), not jumped to 5.
-      assertEquals(start + 2.0, e.setpointInches(), 0.05);
-      assertEquals(e.setpointInches(), e.positionInches(), 0.5);
-      scenario.run(4.0);
-      assertEquals(5.0, e.positionInches(), 0.2);
-      assertFalse(e.faulted());
-      setTarget(0.0);
-      scenario.run(6.0);
-      assertEquals(Elevator.STOP_MARGIN_INCHES, e.positionInches(), 0.2);
+  void autoRangeFindsBothStopsFromAWrongZero() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, 9.20);
+      assertEquals(RangeStatus.DONE, e.rangeStatus());
+      assertTrue(e.isRanged());
+      assertEquals(-3.0, e.bottomFoundInches(), 0.05);
+      assertEquals(9.20, e.travelInches(), 0.03);
+      // Reading and reality agree, and it holds just below the top, off the stop.
+      assertEquals(io.physicalInches(), e.positionInches(), 1e-6);
+      assertEquals(e.highInches(), io.physicalInches(), 0.05);
       assertFalse(e.faulted());
     }
   }
 
   @Test
-  void theTargetIsClampedToTheTravel() {
-    try (Scenario scenario = Scenario.start()) {
-      Elevator e = build();
-      scenario.enable();
-      setTarget(50.0);
-      scenario.run(0.5);
-      assertEquals(Elevator.TRAVEL_INCHES - Elevator.STOP_MARGIN_INCHES, e.targetInches(), 1e-9);
+  void autoRangeRejectsATravelFarFromNominal() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, 11.0);
+      assertEquals(RangeStatus.FAILED, e.rangeStatus());
+      assertFalse(e.isRanged());
+      assertFalse(e.needsRange()); // no automatic retry after a failure
+      assertEquals(Elevator.NOMINAL_TRAVEL_INCHES, e.travelInches(), 1e-9);
+    }
+  }
+
+  @Test
+  void firstTeleopEnableRangesByItselfThenTheStickCoversTheMeasuredRange() {
+    try (Scenario sc = Scenario.start()) {
+      RobotContainer rc = new RobotContainer(KnownUnits.SIMULATION);
+      Elevator e = rc.elevator;
+      stick(0.0);
+      sc.run(0.2);
+      sc.enable();
+      sc.run(8.0);
+      assertEquals(RangeStatus.DONE, e.rangeStatus());
+      assertEquals(e.lowInches(), e.positionInches(), 0.03); // stick released = bottom of range
+      stick(-1.0);
+      sc.run(2.0);
+      assertEquals(e.highInches(), e.positionInches(), 0.03);
+      stick(-0.5);
+      sc.run(2.0);
+      assertEquals((e.lowInches() + e.highInches()) / 2, e.positionInches(), 0.03);
+      // A second enable does not range again.
+      sc.disable();
+      sc.run(0.2);
+      sc.enable();
+      sc.run(0.5);
+      assertFalse(e.mode().startsWith("range"));
+      assertFalse(e.faulted());
+    }
+  }
+
+  @Test
+  void goalTuningMovesTheFullRangeInHalfASecond() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      sc.disable();
+      e.tuning().set("CruiseInPerSec", 40);
+      e.tuning().set("AccelInPerSec2", 250);
+      e.tuning().set("PeakVolts", 12);
+      e.tuning().set("StatorAmps", 40);
+      sc.run(0.1); // applied while disabled
+      sc.enable();
+      Command down = e.goTo(e.lowInches());
+      down.schedule();
+      sc.run(2.0);
+      Metrics m = Metrics.move(sc, io, e, e.highInches(), 2.0);
+      System.out.println("goal tuning, full move: " + m);
+      assertTrue(m.settleSeconds() < 0.6, m.toString());
+      assertTrue(m.overshootInches() < 0.05, m.toString());
+      assertTrue(Math.abs(m.holdErrorInches()) < 0.02, m.toString());
+      assertFalse(e.faulted());
+    }
+  }
+
+  @Test
+  void defaultTuningIsGentleAndAccurate() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.goTo(e.lowInches()).schedule();
+      sc.run(3.0);
+      Metrics m = Metrics.move(sc, io, e, e.highInches(), 3.0);
+      System.out.println("default tuning, full move: " + m);
+      assertTrue(m.settleSeconds() < 1.4, m.toString());
+      assertTrue(Math.abs(m.holdErrorInches()) < 0.02, m.toString());
+      assertTrue(m.peakSpeed() < 10.5, m.toString());
+    }
+  }
+
+  @Test
+  void abortCutsTheOutputUntilCleared() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.goTo(5.0).schedule();
+      sc.run(2.0);
+      abort(true);
+      sc.run(0.5);
+      assertTrue(e.aborted());
+      assertEquals(0.0, io.rightVolts(), 1e-9);
+      abort(false);
+      sc.run(2.0);
+      assertEquals(5.0, e.positionInches(), 0.03);
+    }
+  }
+
+  @Test
+  void aProfileTheMotorsCannotFollowLatchesTheLagFault() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      sc.disable();
+      e.tuning().set("PeakVolts", 1.0);
+      e.tuning().set("CruiseInPerSec", 40);
+      e.tuning().set("AccelInPerSec2", 400);
+      sc.run(0.1);
+      sc.enable();
+      e.goTo(e.lowInches()).schedule();
+      sc.run(3.0);
+      assertTrue(e.faulted());
+      assertEquals(0.0, io.rightVolts(), 1e-9);
+    }
+  }
+
+  @Test
+  void theDanceStaysOffTheStopsAndEndsAtTheBottom() {
+    try (Scenario sc = Scenario.start()) {
+      RobotContainer rc = new RobotContainer(KnownUnits.SIMULATION);
+      Elevator e = rc.elevator;
+      e.tuning().set("DanceSeconds", 45);
+      sc.run(0.2);
+      sc.enableAutonomous();
+      rc.autonomousCommand().schedule();
+      double lowest = 99, highest = -99;
+      sc.run(8.0); // auto-range first
+      assertEquals(RangeStatus.DONE, e.rangeStatus());
+      for (int i = 0; i < 45 * 50; i++) {
+        sc.run(0.02);
+        lowest = Math.min(lowest, e.positionInches());
+        highest = Math.max(highest, e.positionInches());
+      }
+      sc.run(2.0);
+      assertTrue(lowest > 0.1, "lowest " + lowest);
+      assertTrue(highest < e.travelInches() - 0.1, "highest " + highest);
+      assertEquals(e.lowInches(), e.positionInches(), 0.05);
+      assertFalse(e.faulted());
+    }
+  }
+
+  @Test
+  void aScriptCanRunTheStandardMovesByName() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine").setString("moves");
+      sc.run(0.5 + 1.5);
+      assertEquals(8.0, e.targetInches(), 1e-9);
+      sc.run(5.0);
+      assertEquals(1.0, e.positionInches(), 0.03);
+      assertEquals(
+          1, NetworkTableInstance.getDefault().getEntry("/Elevator/Status/RoutinesDone").getInteger(0));
+    }
+  }
+
+  @Test
+  void quasistaticAndDynamicStayInsideTheStops() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      double lowest = 99, highest = -99;
+      Command q = e.quasistatic().andThen(e.dynamic());
+      q.schedule();
+      for (int i = 0; i < 60 * 50 && q.isScheduled(); i++) {
+        sc.run(0.02);
+        lowest = Math.min(lowest, io.physicalInches());
+        highest = Math.max(highest, io.physicalInches());
+      }
+      assertFalse(q.isScheduled());
+      assertTrue(lowest > 0.05, "lowest " + lowest);
+      assertTrue(highest < e.travelInches() - 0.05, "highest " + highest);
+      assertFalse(e.faulted());
     }
   }
 
   @Test
   void nothingMovesWhileDisabled() {
-    try (Scenario scenario = Scenario.start()) {
-      Elevator e = build();
-      setTarget(5.0);
-      scenario.run(2.0);
-      assertEquals(0.0, e.positionInches(), 1e-3);
-      assertTrue(e.setpointInches() < 0.01);
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      io.placeCarriage(0.0);
+      Elevator e = new Elevator(io);
+      e.setDefaultCommand(e.followStick());
+      stick(-1.0);
+      sc.run(2.0);
+      assertEquals(0.0, io.physicalInches(), 1e-9);
     }
   }
 }

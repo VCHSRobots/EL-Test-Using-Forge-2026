@@ -25,8 +25,24 @@ public class Robot extends TimedRobot {
   @Override
   public void disabledPeriodic() {}
 
+  private edu.wpi.first.wpilibj2.command.Command auto;
+
+  /** Autonomous plays the elevator's dance for minutes; disabling or teleop ends it. */
+  @Override
+  public void autonomousInit() {
+    auto = container.autonomousCommand();
+    auto.schedule();
+  }
+
   @Override
   public void autonomousPeriodic() {}
+
+  @Override
+  public void teleopInit() {
+    if (auto != null) {
+      auto.cancel();
+    }
+  }
 
   @Override
   public void teleopPeriodic() {}

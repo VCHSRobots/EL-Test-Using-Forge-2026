@@ -2,42 +2,48 @@ package frc.robot.subsystems;
 
 import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.StatusSignal;
+import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
+import com.ctre.phoenix6.configs.MotionMagicConfigs;
+import com.ctre.phoenix6.configs.Slot0Configs;
 import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
+import com.ctre.phoenix6.configs.VoltageConfigs;
 import com.ctre.phoenix6.controls.Follower;
+import com.ctre.phoenix6.controls.MotionMagicVoltage;
 import com.ctre.phoenix6.controls.NeutralOut;
-import com.ctre.phoenix6.controls.PositionVoltage;
 import com.ctre.phoenix6.controls.VoltageOut;
 import com.ctre.phoenix6.hardware.TalonFX;
+import com.ctre.phoenix6.signals.ControlModeValue;
+import com.ctre.phoenix6.signals.GravityTypeValue;
 import com.ctre.phoenix6.signals.InvertedValue;
 import com.ctre.phoenix6.signals.MotorAlignmentValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.ctre.phoenix6.signals.StaticFeedforwardSignValue;
 import frc.robot.hardware.Unit;
 
 /**
- * The two Kraken motors. The right motor counter-clockwise raises the carriage and the left motor
- * clockwise raises it, so the right is CounterClockwise_Positive and the left Clockwise_Positive:
- * positive rotation is UP on both. Each motor runs its own position loop on its own encoder.
- * Position is zeroed at construction: power up with the carriage on the bottom stop.
+ * The two Kraken X44 motors on one shaft. The right motor counter-clockwise raises the carriage
+ * and the left motor clockwise raises it, so the right is CounterClockwise_Positive and the left
+ * Clockwise_Positive. The right motor LEADS (Motion Magic or open-loop volts) and the left is a
+ * CTRE Follower of it, Opposed (they are mounted mirrored).
+ *
+ * <p>Both Talons are set to work in INCHES: SensorToMechanismRatio is the motor rotations per inch,
+ * so positions, velocities, soft limits, gains and Motion Magic limits are all in inches.
  */
 public class TalonElevatorIO implements ElevatorIO {
+  private static final double CONFIG_TIMEOUT_S = 0.05;
+  private static final double LOG_HZ = 100.0;
+
   private final TalonFX right;
   private final TalonFX left;
-  private final PositionVoltage rightRequest = new PositionVoltage(0);
-  private final PositionVoltage leftRequest = new PositionVoltage(0);
+  private final MotionMagicVoltage moveRequest = new MotionMagicVoltage(0).withEnableFOC(false);
+  private final VoltageOut voltsRequest = new VoltageOut(0).withEnableFOC(false);
   private final Follower followRequest;
   private final NeutralOut neutral = new NeutralOut();
-  private final VoltageOut homeRequest = new VoltageOut(0).withEnableFOC(false);
-  private final SoftwareLimitSwitchConfigs softLimits = new SoftwareLimitSwitchConfigs();
-  private double rightRot;
-  private double leftRot;
-  private double rightV;
-  private double leftV;
-  private double rightA;
-  private double leftA;
-  private static final double LOG_HZ = 100.0;
   private final StatusSignal<?>[] rightSignals;
   private final StatusSignal<?>[] leftSignals;
+  private final StatusSignal<Double> refSlope;
+  private final StatusSignal<ControlModeValue> controlMode;
   private Extras rightX = Extras.ZERO;
   private Extras leftX = Extras.ZERO;
 
@@ -51,13 +57,16 @@ public class TalonElevatorIO implements ElevatorIO {
     left.setPosition(0);
     rightSignals = signalsOf(right);
     leftSignals = signalsOf(left);
+    refSlope = right.getClosedLoopReferenceSlope();
+    controlMode = right.getControlMode();
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, rightSignals);
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, leftSignals);
+    BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, refSlope, controlMode);
     right.optimizeBusUtilization();
     left.optimizeBusUtilization();
   }
 
-  /** Every signal read each loop. Order matters: see {@link #extrasOf}. */
+  /** Every signal read each loop. Order matters: see {@link #extrasOf} and {@link #update}. */
   private static StatusSignal<?>[] signalsOf(TalonFX m) {
     return new StatusSignal<?>[] {
       m.getPosition(), m.getMotorVoltage(), m.getStatorCurrent(), // 0-2
@@ -80,74 +89,92 @@ public class TalonElevatorIO implements ElevatorIO {
     var cfg = new TalonFXConfiguration();
     cfg.MotorOutput.Inverted = direction;
     cfg.MotorOutput.NeutralMode = NeutralModeValue.Brake;
-    cfg.Voltage.PeakForwardVoltage = Elevator.PEAK_VOLTS;
-    cfg.Voltage.PeakReverseVoltage = -Elevator.PEAK_VOLTS;
-    cfg.CurrentLimits.StatorCurrentLimit = Elevator.STATOR_LIMIT_AMPS;
+    // Work in inches of carriage travel.
+    cfg.Feedback.SensorToMechanismRatio = Elevator.MOTOR_ROTATIONS_PER_INCH;
+    cfg.Voltage.PeakForwardVoltage = Elevator.DEFAULT_PEAK_VOLTS;
+    cfg.Voltage.PeakReverseVoltage = -Elevator.DEFAULT_PEAK_VOLTS;
+    cfg.CurrentLimits.StatorCurrentLimit = Elevator.DEFAULT_STATOR_AMPS;
     cfg.CurrentLimits.StatorCurrentLimitEnable = true;
-    cfg.CurrentLimits.SupplyCurrentLimit = Elevator.SUPPLY_LIMIT_AMPS;
+    cfg.CurrentLimits.SupplyCurrentLimit = Elevator.DEFAULT_STATOR_AMPS;
     cfg.CurrentLimits.SupplyCurrentLimitEnable = true;
-    cfg.Slot0.kP = Elevator.KP_VOLTS_PER_ROTATION;
-    // Soft limits in motor rotations: a last line of defence inside the motor controller.
+    cfg.Slot0 = slot0(Elevator.DEFAULT_GAINS);
+    cfg.MotionMagic = motionMagic(Elevator.DEFAULT_GAINS);
+    // Until the travel is measured, soft limits assume zero is the bottom and nominal travel.
     cfg.SoftwareLimitSwitch.ForwardSoftLimitEnable = true;
     cfg.SoftwareLimitSwitch.ForwardSoftLimitThreshold =
-        (Elevator.TRAVEL_INCHES - Elevator.STOP_MARGIN_INCHES / 2) * Elevator.MOTOR_ROTATIONS_PER_INCH;
+        Elevator.NOMINAL_TRAVEL_INCHES - Elevator.SOFT_LIMIT_MARGIN_INCHES;
     cfg.SoftwareLimitSwitch.ReverseSoftLimitEnable = true;
-    cfg.SoftwareLimitSwitch.ReverseSoftLimitThreshold =
-        -Elevator.STOP_MARGIN_INCHES / 2 * Elevator.MOTOR_ROTATIONS_PER_INCH;
+    cfg.SoftwareLimitSwitch.ReverseSoftLimitThreshold = Elevator.SOFT_LIMIT_MARGIN_INCHES;
     motor.getConfigurator().apply(cfg);
   }
 
-  @Override
-  public void setPosition(double rotations) {
-    right.setControl(rightRequest.withPosition(rotations));
-    left.setControl(leftRequest.withPosition(rotations));
+  private static Slot0Configs slot0(Gains g) {
+    var s = new Slot0Configs();
+    s.GravityType = GravityTypeValue.Elevator_Static;
+    s.StaticFeedforwardSign = StaticFeedforwardSignValue.UseVelocitySign;
+    s.kS = g.kS();
+    s.kG = g.kG();
+    s.kV = g.kV();
+    s.kA = g.kA();
+    s.kP = g.kP();
+    s.kD = g.kD();
+    return s;
   }
 
-  /** Left follows right. Opposed: the left motor is mounted mirrored (opposite invert), so it must turn opposite the right rotor. */
+  private static MotionMagicConfigs motionMagic(Gains g) {
+    var m = new MotionMagicConfigs();
+    m.MotionMagicCruiseVelocity = g.cruiseInPerSec();
+    m.MotionMagicAcceleration = g.accelInPerSec2();
+    m.MotionMagicJerk = g.jerkInPerSec3();
+    return m;
+  }
+
   @Override
-  public void setLeaderFollower(double rotations) {
-    right.setControl(rightRequest.withPosition(rotations));
+  public void applyGains(Gains g) {
+    // Only the leader runs the loop, but keep both the same in case the roles ever change.
+    for (TalonFX m : new TalonFX[] {right, left}) {
+      m.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S);
+      m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
+    }
+  }
+
+  @Override
+  public void applyCaps(double peakVolts, double statorAmps) {
+    var v = new VoltageConfigs();
+    v.PeakForwardVoltage = peakVolts;
+    v.PeakReverseVoltage = -peakVolts;
+    var c = new CurrentLimitsConfigs();
+    c.StatorCurrentLimit = statorAmps;
+    c.StatorCurrentLimitEnable = true;
+    c.SupplyCurrentLimit = statorAmps;
+    c.SupplyCurrentLimitEnable = true;
+    for (TalonFX m : new TalonFX[] {right, left}) {
+      m.getConfigurator().apply(v, CONFIG_TIMEOUT_S);
+      m.getConfigurator().apply(c, CONFIG_TIMEOUT_S);
+    }
+  }
+
+  @Override
+  public void setSoftLimits(double reverseInches, boolean reverseOn, double forwardInches, boolean forwardOn) {
+    var s = new SoftwareLimitSwitchConfigs();
+    s.ReverseSoftLimitThreshold = reverseInches;
+    s.ReverseSoftLimitEnable = reverseOn;
+    s.ForwardSoftLimitThreshold = forwardInches;
+    s.ForwardSoftLimitEnable = forwardOn;
+    right.getConfigurator().apply(s, CONFIG_TIMEOUT_S);
+    left.getConfigurator().apply(s, CONFIG_TIMEOUT_S);
+  }
+
+  @Override
+  public void moveTo(double inches) {
+    right.setControl(moveRequest.withPosition(inches));
     left.setControl(followRequest);
   }
 
   @Override
-  public void setPosition(double rotations, boolean useRight, boolean useLeft) {
-    if (useRight) {
-      right.setControl(rightRequest.withPosition(rotations));
-    } else {
-      right.setControl(neutral);
-    }
-    if (useLeft) {
-      left.setControl(leftRequest.withPosition(rotations));
-    } else {
-      left.setControl(neutral);
-    }
-  }
-
-  /** Open loop down at this many volts; the left follows the right (opposed), as in normal driving. */
-  @Override
-  public void homeDrive(double volts) {
-    right.setControl(homeRequest.withOutput(-volts));
+  public void setVolts(double volts) {
+    right.setControl(voltsRequest.withOutput(volts));
     left.setControl(followRequest);
-  }
-
-  /** Reverse soft limit off while homing (one blocking config write per motor, at most 50 ms each). */
-  @Override
-  public void setReverseLimitEnabled(boolean enabled) {
-    softLimits.ForwardSoftLimitEnable = true;
-    softLimits.ForwardSoftLimitThreshold =
-        (Elevator.TRAVEL_INCHES - Elevator.STOP_MARGIN_INCHES / 2) * Elevator.MOTOR_ROTATIONS_PER_INCH;
-    softLimits.ReverseSoftLimitEnable = enabled;
-    softLimits.ReverseSoftLimitThreshold =
-        -Elevator.STOP_MARGIN_INCHES / 2 * Elevator.MOTOR_ROTATIONS_PER_INCH;
-    right.getConfigurator().apply(softLimits, 0.05);
-    left.getConfigurator().apply(softLimits, 0.05);
-  }
-
-  @Override
-  public void zero() {
-    right.setPosition(0);
-    left.setPosition(0);
   }
 
   @Override
@@ -157,26 +184,33 @@ public class TalonElevatorIO implements ElevatorIO {
   }
 
   @Override
+  public void setPositionInches(double inches) {
+    right.setPosition(inches);
+    left.setPosition(inches);
+  }
+
+  @Override
   public void update() {
     BaseStatusSignal.refreshAll(rightSignals);
     BaseStatusSignal.refreshAll(leftSignals);
-    rightRot = rightSignals[0].getValueAsDouble();
-    leftRot = leftSignals[0].getValueAsDouble();
-    rightV = rightSignals[1].getValueAsDouble();
-    leftV = leftSignals[1].getValueAsDouble();
-    rightA = rightSignals[2].getValueAsDouble();
-    leftA = leftSignals[2].getValueAsDouble();
+    BaseStatusSignal.refreshAll(refSlope, controlMode);
     rightX = extrasOf(rightSignals);
     leftX = extrasOf(leftSignals);
   }
 
+  private boolean profiling() {
+    return controlMode.getValue() == ControlModeValue.MotionMagicVoltage;
+  }
+
   @Override public Extras rightExtras() { return rightX; }
   @Override public Extras leftExtras() { return leftX; }
-
-  @Override public double rightRotations() { return rightRot; }
-  @Override public double leftRotations() { return leftRot; }
-  @Override public double rightVolts() { return rightV; }
-  @Override public double leftVolts() { return leftV; }
-  @Override public double rightStatorAmps() { return rightA; }
-  @Override public double leftStatorAmps() { return leftA; }
+  @Override public double rightInches() { return rightSignals[0].getValueAsDouble(); }
+  @Override public double leftInches() { return leftSignals[0].getValueAsDouble(); }
+  @Override public double velocityInPerSec() { return rightSignals[3].getValueAsDouble(); }
+  @Override public double profileInches() { return profiling() ? rightX.closedLoopReference() : Double.NaN; }
+  @Override public double profileVelocityInPerSec() { return profiling() ? refSlope.getValueAsDouble() : Double.NaN; }
+  @Override public double rightVolts() { return rightSignals[1].getValueAsDouble(); }
+  @Override public double leftVolts() { return leftSignals[1].getValueAsDouble(); }
+  @Override public double rightStatorAmps() { return rightSignals[2].getValueAsDouble(); }
+  @Override public double leftStatorAmps() { return leftSignals[2].getValueAsDouble(); }
 }

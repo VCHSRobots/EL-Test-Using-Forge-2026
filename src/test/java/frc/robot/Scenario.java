@@ -35,6 +35,14 @@ public final class Scenario implements AutoCloseable {
     return this;
   }
 
+  public Scenario enableAutonomous() {
+    DriverStationSim.setDsAttached(true);
+    DriverStationSim.setAutonomous(true);
+    DriverStationSim.setEnabled(true);
+    DriverStationSim.notifyNewData();
+    return this;
+  }
+
   public Scenario disable() {
     DriverStationSim.setEnabled(false);
     DriverStationSim.notifyNewData();

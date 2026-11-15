@@ -2,7 +2,12 @@ package frc.robot;
 
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.Joystick;
 import edu.wpi.first.wpilibj.RobotBase;
+import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
+import edu.wpi.first.wpilibj2.command.button.JoystickButton;
+import edu.wpi.first.wpilibj2.command.button.Trigger;
 import frc.robot.hardware.Unit;
 import frc.robot.subsystems.Elevator;
 import frc.robot.subsystems.SimElevatorIO;
@@ -19,28 +24,24 @@ public class RobotContainer {
     this.unit = unit;
     if (unit.known()) {
       elevator = new Elevator(RobotBase.isSimulation() ? new SimElevatorIO() : new TalonElevatorIO(unit));
-      // Moves only while enabled. The stick on port 0, axis 1 sets the height: released = bottom,
-      // full forward = 8 in (see Elevator.followStick). Zero is wherever the carriage is while disabled.
+      // Teleop: the stick on port 0, axis 1 sets the height over the measured range.
       elevator.setDefaultCommand(elevator.followStick());
-      // Button 1 (the trigger / A) on the stick: auto-home. It takes over, finds the bottom stop by
-      // its stall, zeroes there, and hands control back to the stick (see Elevator.autoHome).
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(
-              new edu.wpi.first.wpilibj.Joystick(Elevator.STICK_PORT), 1)
-          .onTrue(elevator.autoHome());
-      // Single-motor test on a second pad (port 1), so a stick on port 0 never triggers it:
-      // A = leader/follower (default), Y = both independent, B = right only, X = left only.
-      edu.wpi.first.wpilibj.XboxController testPad = new edu.wpi.first.wpilibj.XboxController(1);
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 1)
-          .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.LEADER_FOLLOWER)));
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 4)
-          .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.BOTH)));
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 2)
-          .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.RIGHT_ONLY)));
-      new edu.wpi.first.wpilibj2.command.button.JoystickButton(testPad, 3)
-          .onTrue(edu.wpi.first.wpilibj2.command.Commands.runOnce(() -> elevator.setDrive(Elevator.Drive.LEFT_ONLY)));
+      // The first teleop enable after the program starts finds both stops (auto-range).
+      new Trigger(() -> DriverStation.isEnabled() && DriverStation.isTeleop() && elevator.needsRange())
+          .onTrue(elevator.autoRange());
+      Joystick stick = new Joystick(Elevator.STICK_PORT);
+      // Button 1 (trigger / A): run auto-range again.
+      new JoystickButton(stick, 1).onTrue(elevator.autoRange());
+      // Button 2 (B): start the dance; press again to stop it and return to the stick.
+      new JoystickButton(stick, 2).toggleOnTrue(elevator.dance());
     } else {
       elevator = null;
       DriverStation.reportWarning("Unknown unit " + unit.serial() + ": elevator not built", false);
     }
+  }
+
+  /** Autonomous: the dance (auto-range first if the stops are not known yet). */
+  public Command autonomousCommand() {
+    return elevator == null ? Commands.none() : elevator.dance();
   }
 }

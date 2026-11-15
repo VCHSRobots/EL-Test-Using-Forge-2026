@@ -1,56 +1,64 @@
 package frc.robot.subsystems;
 
 /**
- * What the Elevator needs from its two motors, in motor rotations where positive means UP for
- * both (the directions are handled inside the implementations). {@link TalonElevatorIO} is the
- * real hardware; {@link SimElevatorIO} is plain Java physics for simulation and tests.
+ * What the Elevator needs from its two motors. Everything is in INCHES of carriage travel (up
+ * positive) and volts; the implementations convert to motor rotations. {@link TalonElevatorIO} is
+ * the real hardware (the right motor leads, the left follows it); {@link SimElevatorIO} is plain
+ * Java physics for simulation and tests.
  */
 public interface ElevatorIO {
-  /** Command both motors to this position (motor rotations, up positive) with a position loop. */
-  void setPosition(double rotations);
-
   /**
-   * Position loop on only the chosen motors; the other motor gets neutral output (it still turns
-   * with the chain and is still read). Default for implementations with no single-motor mode: both.
+   * Feedforward, feedback and profile settings, all in inch units: kS, kG volts; kV volts per
+   * in/s; kA volts per in/s^2; kP volts per inch of error; kD volts per in/s of error; cruise in/s,
+   * acceleration in/s^2, jerk in/s^3 (0 = no jerk limit).
    */
-  default void setPosition(double rotations, boolean useRight, boolean useLeft) {
-    setPosition(rotations);
-  }
+  record Gains(
+      double kS,
+      double kG,
+      double kV,
+      double kA,
+      double kP,
+      double kD,
+      double cruiseInPerSec,
+      double accelInPerSec2,
+      double jerkInPerSec3) {}
 
-  /**
-   * Right motor runs the position loop, left follows the right motor's output. Default for
-   * implementations with no follower mode: both run their own loop.
-   */
-  default void setLeaderFollower(double rotations) {
-    setPosition(rotations);
-  }
+  /** Writes gains and profile limits into the controllers. May block ~50 ms: call while disabled. */
+  void applyGains(Gains gains);
 
-  /** Take the carriage to be at the bottom now: both positions read 0. Default: nothing to do. */
-  default void zero() {}
+  /** Writes the output caps (peak volts, stator and supply amps). May block: call while disabled. */
+  void applyCaps(double peakVolts, double statorAmps);
 
-  /**
-   * Homing: drive both motors DOWN open loop at this many volts (positive number), the left
-   * following the right. Default: neutral (an implementation with no homing never moves).
-   */
-  default void homeDrive(double volts) {
-    neutral();
-  }
+  /** The controllers' own soft limits, in inches. May block ~50 ms per motor. */
+  void setSoftLimits(double reverseInches, boolean reverseOn, double forwardInches, boolean forwardOn);
 
-  /**
-   * Allow the carriage to be driven below zero (the reverse soft limit off) while homing finds
-   * the real bottom; true restores the limit. Default: nothing to do.
-   */
-  default void setReverseLimitEnabled(boolean enabled) {}
+  /** Profiled move (Motion Magic) to this height; feedforward and PD run in the controller. */
+  void moveTo(double inches);
 
-  /** Motors off (neutral output). */
+  /** Open-loop volts on both motors (up positive). */
+  void setVolts(double volts);
+
+  /** Motors off (neutral output, brake mode). */
   void neutral();
+
+  /** Tell the encoders the carriage is at this height now (used when a hard stop is found). */
+  void setPositionInches(double inches);
 
   /** Call every loop: refresh readings (and step the physics, in simulation). */
   void update();
 
-  double rightRotations();
+  double rightInches();
 
-  double leftRotations();
+  double leftInches();
+
+  /** Carriage speed from the leader, in/s (up positive). */
+  double velocityInPerSec();
+
+  /** The profile's current position (Motion Magic reference), inches; NaN when not profiling. */
+  double profileInches();
+
+  /** The profile's current velocity, in/s; NaN when not profiling. */
+  double profileVelocityInPerSec();
 
   double rightVolts();
 

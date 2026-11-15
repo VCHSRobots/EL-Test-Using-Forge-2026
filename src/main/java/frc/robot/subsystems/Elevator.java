@@ -2,108 +2,147 @@ package frc.robot.subsystems;
 
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.math.MathUtil;
+import edu.wpi.first.networktables.BooleanSubscriber;
 import edu.wpi.first.networktables.DoublePublisher;
-import edu.wpi.first.networktables.DoubleSubscriber;
+import edu.wpi.first.networktables.IntegerPublisher;
 import edu.wpi.first.networktables.NetworkTable;
 import edu.wpi.first.networktables.NetworkTableInstance;
+import edu.wpi.first.networktables.StringPublisher;
+import edu.wpi.first.networktables.StringSubscriber;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.RobotController;
 import edu.wpi.first.wpilibj.Timer;
-import java.util.function.DoubleSupplier;
 import edu.wpi.first.wpilibj2.command.Command;
+import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.FunctionalCommand;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import java.util.Map;
+import java.util.function.Supplier;
 
 /**
- * The two-motor elevator stand. Position is in inches above the bottom stop (zero = carriage on
- * the bottom stop at power-up, so ALWAYS power up with the carriage resting on the bottom stop).
+ * The two-motor elevator stand. Heights are inches above the bottom hard stop, found by
+ * auto-range (bottom, then top) on the first enable after the program starts.
  *
- * <p>Each motor runs its own position loop on a setpoint that this class ramps at a limited
- * speed, so the carriage can never be asked to move faster than {@link #speedInPerSec}. Directions:
- * the right motor counter-clockwise raises the carriage, the left motor clockwise raises it, so
- * the right is built CounterClockwise_Positive and the left Clockwise_Positive: positive motor
- * rotation means "up" on both.
+ * <p>Moves are Motion Magic profiles run inside the right Talon at 1 kHz, with gravity (kG),
+ * friction (kS), velocity (kV) and acceleration (kA) feedforward and a PD loop; the left motor
+ * follows. Gains, profile limits and output caps are live-tunable under /Elevator/Tuning/ (applied
+ * while disabled). Commanded heights always stay {@link #STOP_MARGIN_INCHES} inside the measured
+ * travel, and the Talons' soft limits sit just inside the stops.
  *
- * <p>NetworkTables control (table /Elevator/Control): write TargetInches (absolute, clamped to the
- * travel) and optionally SpeedInPerSec (default 1, never above {@link #MAX_SPEED_IN_PER_SEC}).
- * Everything moves only while the robot is enabled; on disable the target and setpoint snap back
- * to where the carriage is, so an enable never jumps.
+ * <p>Safety: /Forge/Abort true means zero output until it is cleared; a lag of more than
+ * {@link #FAULT_ERROR_INCHES} behind the profile for {@link #FAULT_SECONDS} latches a fault (zero
+ * output until the next disable). Nothing moves while disabled.
  */
 @Logged
 public class Elevator extends SubsystemBase {
-  // --- Mechanical constants (from the stand's design) ---
-  public static final double MOTOR_ROTATIONS_PER_SHAFT_TURN = 2.875; // 2.875:1 reduction
-  public static final double INCHES_PER_SHAFT_TURN = 4.0; // chain travel per shaft turn
+  // --- The stand (director, 11 and 15 Nov 2026) ---
+  public static final double MOTOR_ROTATIONS_PER_SHAFT_TURN = 46.0 / 16.0; // 16T pinion, 24T idler, 46T
+  public static final double INCHES_PER_SHAFT_TURN = 16 * 0.25; // #25 chain on a 16T sprocket
   public static final double MOTOR_ROTATIONS_PER_INCH =
       MOTOR_ROTATIONS_PER_SHAFT_TURN / INCHES_PER_SHAFT_TURN;
-  public static final double TRAVEL_INCHES = 9.5;
+  /** Measured stop to stop, +/- 0.25 in. Auto-range measures the real one. */
+  public static final double NOMINAL_TRAVEL_INCHES = 9.375;
+  /** Auto-range rejects a measured travel further than this from nominal. */
+  public static final double TRAVEL_TOLERANCE_INCHES = 0.75;
+  /** Commanded heights stay this far inside the stops. */
+  public static final double STOP_MARGIN_INCHES = 0.25;
+  /** The Talons' soft limits sit this far inside the stops. */
+  public static final double SOFT_LIMIT_MARGIN_INCHES = 0.10;
 
-  // --- Motion and safety limits (first-test values; raise only with care) ---
-  public static final double DEFAULT_SPEED_IN_PER_SEC = 1.0;
-  /** Stick control: full forward on the stick is this height above the bottom (director, 14 Nov). */
-  public static final double STICK_TOP_INCHES = 8.0;
-  /** The most the stick may move the carriage, in inches per second (the setpoint is ramped at it). */
-  public static final double STICK_SPEED_IN_PER_SEC = 2.0;
-  /** The stick axis (the first stick's Y; forward reads negative) and its port. */
+  // --- Defaults (predicted from the motor data and EL21; to be measured, see NOTES.md) ---
+  public static final ElevatorIO.Gains DEFAULT_GAINS =
+      new ElevatorIO.Gains(0.10, 0.15, 0.069, 0.0006, 4.0, 0.05, 10.0, 60.0, 0.0);
+  public static final double DEFAULT_PEAK_VOLTS = 3.0;
+  public static final double DEFAULT_STATOR_AMPS = 20.0;
+  /** Hard ceilings the tuning values can never exceed. */
+  public static final double MAX_PEAK_VOLTS = 12.0;
+  public static final double MAX_STATOR_AMPS = 40.0;
+  public static final double MAX_CRUISE_IN_PER_SEC = 60.0;
+  public static final double MAX_ACCEL_IN_PER_SEC2 = 600.0;
+
+  // --- Stick ---
   public static final int STICK_PORT = 0;
   public static final int STICK_AXIS = 1;
   public static final double STICK_DEADBAND = 0.08;
-  public static final double MAX_SPEED_IN_PER_SEC = 2.0;
-  /** Stay this far from the stops: the target is clamped to [MARGIN, TRAVEL - MARGIN]. */
-  public static final double STOP_MARGIN_INCHES = 0.25;
-  /** If a motor lags its setpoint by more than this for FAULT_SECONDS, the output is cut. */
+
+  // --- Safety ---
   public static final double FAULT_ERROR_INCHES = 1.0;
   public static final double FAULT_SECONDS = 0.25;
-  public static final double PEAK_VOLTS = 3.0;
-  public static final double STATOR_LIMIT_AMPS = 20.0;
-  public static final double SUPPLY_LIMIT_AMPS = 20.0;
-  public static final double KP_VOLTS_PER_ROTATION = 6.0;
 
-  // --- Auto-home (find the bottom hard stop by its stall) ---
-  /** Open-loop volts pushing DOWN while homing (ramped in over HOME_RAMP_SECONDS). */
-  public static final double HOME_VOLTS = 0.6;
-  public static final double HOME_RAMP_SECONDS = 0.3;
-  /** Ignore the stall test for this long after the start (spin-up current is not a stall). */
-  public static final double HOME_GRACE_SECONDS = 0.5;
-  /** Stalled = average stator current at least this ... */
-  public static final double HOME_STALL_AMPS = 6.0;
-  /** ... and speed below this (inches per second) ... */
-  public static final double HOME_STALL_SPEED_IN_PER_SEC = 0.3;
+  // --- Auto-range (find both hard stops) ---
+  /** Open-loop volts DOWN to find the bottom (EL22: 0.6 V found it in 0.8 s). */
+  public static final double RANGE_DOWN_VOLTS = 0.6;
+  /** Open-loop volts UP for the last creep into the top stop (about 3 in/s by EL21). */
+  public static final double RANGE_UP_VOLTS = 0.5;
+  public static final double RANGE_RAMP_SECONDS = 0.2;
+  /** The fast part of the climb stops this far below the nominal top, then it creeps. */
+  public static final double RANGE_CREEP_START_BELOW_TOP_INCHES = 1.25;
+  public static final double RANGE_GRACE_SECONDS = 0.4;
+  /** Stalled = speed below this (in/s) ... */
+  public static final double RANGE_STALL_SPEED_IN_PER_SEC = 0.3;
+  /** ... with average stator current at least this going down (gravity helps) ... */
+  public static final double RANGE_DOWN_STALL_AMPS = 6.0;
+  /** ... or this going up (holding the carriage alone takes ~4 A a motor) ... */
+  public static final double RANGE_UP_STALL_AMPS = 8.0;
   /** ... for this long in a row. */
-  public static final double HOME_STALL_SECONDS = 0.2;
-  /** Give up (no zero) after this long without a stall. */
-  public static final double HOME_TIMEOUT_SECONDS = 8.0;
+  public static final double RANGE_STALL_SECONDS = 0.2;
+  public static final double RANGE_PHASE_TIMEOUT_SECONDS = 6.0;
 
-  /** Which motors run the position loop. The others are in neutral but still logged. */
-  public enum Drive {
-    BOTH,
-    RIGHT_ONLY,
-    LEFT_ONLY,
-    /** Right motor runs the position loop; the left follows it (CTRE Follower, opposed). */
-    LEADER_FOLLOWER
-  }
+  // --- Test routines ---
+  /** The standard move sequence (inches) and how long each target is held. */
+  public static final double[] MOVES_INCHES = {1.0, 8.0, 4.5, 1.0};
+  public static final double MOVES_HOLD_SECONDS = 1.5;
+  /** Quasistatic ramp rate and ceiling. */
+  public static final double QUASI_VOLTS_PER_SEC = 0.25;
+  public static final double QUASI_MAX_VOLTS = 2.0;
+  /** Open-loop phases end this far from either stop, then brake. */
+  public static final double CHAR_GUARD_INCHES = 1.25;
+
+  public enum RangeStatus { NEVER, RUNNING, DONE, FAILED, INTERRUPTED }
 
   private final ElevatorIO io;
-  private Drive drive = Drive.LEADER_FOLLOWER;
-
-  private final DoubleSubscriber targetSub;
-  private final DoubleSubscriber speedSub;
+  private final Tuning tuning = new Tuning("Elevator/Tuning");
+  private final BooleanSubscriber abortSub;
+  private final StringSubscriber routineSub;
+  private final StringPublisher routinePub;
+  private final IntegerPublisher routineCountPub;
   private final DoublePublisher positionPub;
-  private final DoublePublisher setpointPub;
-  private final DoublePublisher homeOffsetPub;
+  private final DoublePublisher targetPub;
+  private final DoublePublisher travelPub;
+  private final Map<String, Supplier<Command>> routines;
+  private String lastRoutineRequest = "";
+  private long routinesDone;
+  private boolean tuningDirty = true;
 
-  /** 0 = both motors, 1 = right only, 2 = left only (for the log). */
-  double driveMode;
+  // --- Logged state ---
+  String mode = "disabled";
   double targetInches;
-  double setpointInches;
-  double speedInPerSec = DEFAULT_SPEED_IN_PER_SEC;
+  double positionInches;
   double rightInches;
   double leftInches;
+  double sideDiffInches;
+  double velocityInPerSec;
+  double profileInches;
+  double profileVelocityInPerSec;
+  double profileErrorInches;
+  double openLoopVolts;
+  boolean closedLoop;
+  boolean fault;
+  boolean aborted;
+  boolean ranged;
+  boolean zeroKnown;
+  RangeStatus rangeStatus = RangeStatus.NEVER;
+  double travelInches = NOMINAL_TRAVEL_INCHES;
+  double bottomFoundInches;
+  double topFoundInches;
+  double rangeStallSeconds;
+  double rangeAmps;
+  double danceBeat = -1;
+  double moveIndex = -1;
   double rightVolts;
   double leftVolts;
   double rightStatorAmps;
   double leftStatorAmps;
-  boolean fault;
   double rightVelocityRps;
   double rightSupplyAmps;
   double rightTorqueAmps;
@@ -123,9 +162,6 @@ public class Elevator extends SubsystemBase {
   double leftProcessorTempC;
   double leftDuty;
   double leftSupplyVolts;
-  double leftClosedLoopError;
-  double leftClosedLoopReference;
-  double leftClosedLoopOutput;
   double leftFaultField;
   double leftStickyFaultField;
   double batteryVolts;
@@ -133,198 +169,378 @@ public class Elevator extends SubsystemBase {
   double canUtilization;
   boolean browningOut;
   double joystickAxis;
-  /** True while the homing command runs. */
-  boolean homing;
-  /** 0 never run, 1 running, 2 found the bottom, 3 timed out (no zero set), 4 interrupted. */
-  double homeStatus;
-  /** Where the bottom was found, in inches on the OLD zero (negative: below it). Last homing. */
-  double homeFoundInches;
-  double homeStallSeconds;
-  double homeSpeedInPerSec;
-  double homeAmps;
-  private double homeElapsed;
-  private double homeLastInches;
-  private boolean homeStalled;
+  double kS, kG, kV, kA, kP, kD, cruiseInPerSec, accelInPerSec2, jerkInPerSec3, peakVolts, statorAmps;
+
   private double faultTimer;
   private double lastPeriodic = Timer.getFPGATimestamp();
 
   public Elevator(ElevatorIO io) {
     this.io = io;
+    ElevatorIO.Gains g = DEFAULT_GAINS;
+    tuning
+        .add("kS", g.kS(), 0, 1)
+        .add("kG", g.kG(), 0, 2)
+        .add("kV", g.kV(), 0, 0.5)
+        .add("kA", g.kA(), 0, 0.05)
+        .add("kP", g.kP(), 0, 40)
+        .add("kD", g.kD(), 0, 2)
+        .add("CruiseInPerSec", g.cruiseInPerSec(), 0.5, MAX_CRUISE_IN_PER_SEC)
+        .add("AccelInPerSec2", g.accelInPerSec2(), 1, MAX_ACCEL_IN_PER_SEC2)
+        .add("JerkInPerSec3", g.jerkInPerSec3(), 0, 100000)
+        .add("PeakVolts", DEFAULT_PEAK_VOLTS, 1, MAX_PEAK_VOLTS)
+        .add("StatorAmps", DEFAULT_STATOR_AMPS, 5, MAX_STATOR_AMPS)
+        .add("DanceSeconds", 180, 5, 1800)
+        .add("DynamicVolts", 1.0, 0.3, 3.0);
 
-    NetworkTable table = NetworkTableInstance.getDefault().getTable("Elevator/Control");
-    targetSub = table.getDoubleTopic("TargetInches").subscribe(Double.NaN);
-    speedSub = table.getDoubleTopic("SpeedInPerSec").subscribe(DEFAULT_SPEED_IN_PER_SEC);
-    // Publish defaults so the topics exist and can be written from outside.
-    table.getDoubleTopic("TargetInches").publish().set(0.0);
-    table.getDoubleTopic("SpeedInPerSec").publish().set(DEFAULT_SPEED_IN_PER_SEC);
-    NetworkTable status = NetworkTableInstance.getDefault().getTable("Elevator/Status");
+    NetworkTableInstance nt = NetworkTableInstance.getDefault();
+    abortSub = nt.getBooleanTopic("/Forge/Abort").subscribe(false);
+    NetworkTable control = nt.getTable("Elevator/Control");
+    routineSub = control.getStringTopic("Routine").subscribe("");
+    control.getStringTopic("Routine").publish().set("");
+    NetworkTable status = nt.getTable("Elevator/Status");
+    routinePub = status.getStringTopic("Routine").publish();
+    routineCountPub = status.getIntegerTopic("RoutinesDone").publish();
     positionPub = status.getDoubleTopic("PositionInches").publish();
-    setpointPub = status.getDoubleTopic("SetpointInches").publish();
-    homeOffsetPub = status.getDoubleTopic("HomeFoundInches").publish();
+    targetPub = status.getDoubleTopic("TargetInches").publish();
+    travelPub = status.getDoubleTopic("TravelInches").publish();
+    routinePub.set("");
+    routines =
+        Map.of(
+            "range", this::autoRange,
+            "moves", this::standardMoves,
+            "quasistatic", this::quasistatic,
+            "dynamic", this::dynamic,
+            "dance", this::dance);
   }
 
-  /** Current carriage height in inches (average of the two motors). */
-  public double positionInches() {
-    return (rightInches + leftInches) / 2.0;
+  // ---------------------------------------------------------------- queries
+
+  public double positionInches() { return positionInches; }
+  public double targetInches() { return targetInches; }
+  public double travelInches() { return travelInches; }
+  public boolean isRanged() { return ranged; }
+  public RangeStatus rangeStatus() { return rangeStatus; }
+  public double bottomFoundInches() { return bottomFoundInches; }
+  public boolean faulted() { return fault; }
+  public boolean aborted() { return aborted; }
+  public String mode() { return mode; }
+  public Tuning tuning() { return tuning; }
+
+  /** Auto-range should run at the next teleop enable: never ranged, and never failed. */
+  public boolean needsRange() {
+    return !ranged && rangeStatus != RangeStatus.FAILED && rangeStatus != RangeStatus.RUNNING;
   }
 
-  public double setpointInches() {
-    return setpointInches;
+  /** The lowest height a command may ask for. */
+  public double lowInches() {
+    return STOP_MARGIN_INCHES;
   }
 
-  public double targetInches() {
-    return targetInches;
+  /** The highest height a command may ask for (measured travel minus the margin). */
+  public double highInches() {
+    return travelInches - STOP_MARGIN_INCHES;
   }
 
-  public boolean isHoming() {
-    return homing;
-  }
-
-  /** 0 never run, 1 running, 2 found the bottom, 3 timed out, 4 interrupted. */
-  public double homeStatus() {
-    return homeStatus;
-  }
-
-  public double homeFoundInches() {
-    return homeFoundInches;
-  }
-
-  public boolean faulted() {
-    return fault;
-  }
-
-  /** Reached the target (within 0.1 in) and the setpoint has arrived. */
   public boolean atTarget() {
-    return Math.abs(setpointInches - targetInches) < 1e-6
-        && Math.abs(positionInches() - targetInches) < 0.1;
+    return Math.abs(positionInches - targetInches) < 0.05 && Math.abs(velocityInPerSec) < 0.5;
   }
 
-  /** Choose which motors drive. Reset to LEADER_FOLLOWER on every disable. */
-  public void setDrive(Drive d) {
-    drive = d;
+  // ---------------------------------------------------------------- outputs (all go through here)
+
+  /** Profiled move to a height, clamped to the usable range. */
+  private void moveTo(double inches) {
+    targetInches = MathUtil.clamp(inches, lowInches(), highInches());
+    closedLoop = true;
+    openLoopVolts = 0;
+    if (blocked()) {
+      io.neutral();
+    } else {
+      io.moveTo(targetInches);
+    }
   }
 
-  public Drive drive() {
-    return drive;
+  /** Open-loop volts (up positive), for auto-range and characterization only. */
+  private void volts(double v) {
+    closedLoop = false;
+    openLoopVolts = v;
+    if (blocked()) {
+      io.neutral();
+    } else {
+      io.setVolts(v);
+    }
   }
 
-  /** Sets the target (clamped to the travel) from code. NetworkTables writes do the same. */
-  public void setTarget(double inches) {
-    targetInches = clampToTravel(inches);
+  private void stop() {
+    closedLoop = false;
+    openLoopVolts = 0;
+    io.neutral();
   }
 
-  private static double clampToTravel(double inches) {
-    return MathUtil.clamp(inches, STOP_MARGIN_INCHES, TRAVEL_INCHES - STOP_MARGIN_INCHES);
+  private boolean blocked() {
+    return fault || aborted || !DriverStation.isEnabled();
   }
 
-  /** The default command: follow the NetworkTables target at the NetworkTables speed. */
-  public Command followNetworkTables() {
-    return run(this::stepFromNetworkTables).withName("ElevatorFollowNT");
-  }
+  // ---------------------------------------------------------------- driver commands
 
   /**
-   * Joystick jog: axis (-1..1, positive = up) times {@link #DEFAULT_SPEED_IN_PER_SEC} moves the
-   * target; released holds position. The setpoint is still ramped at that speed limit.
-   */
-  public Command jog(DoubleSupplier axis) {
-    return run(() -> {
-          double a = MathUtil.applyDeadband(axis.getAsDouble(), 0.1);
-          speedInPerSec = DEFAULT_SPEED_IN_PER_SEC;
-          targetInches = clampToTravel(targetInches + a * speedInPerSec * 0.02);
-          step();
-        })
-        .withName("ElevatorJog");
-  }
-
-  /**
-   * Stick height control: the stick (axis 1 of port 0, forward = up) sets the wanted height, 0 in
-   * when released and {@link #STICK_TOP_INCHES} at full forward. The carriage is assumed to be on
-   * the bottom stop whenever the robot is disabled (see {@link #periodic}), so it can only go up
-   * from there. The setpoint moves toward the wanted height at {@link #STICK_SPEED_IN_PER_SEC}.
-   * A missing pad reads as released, so the carriage goes down.
+   * The stick on port 0, axis 1 (forward = up) sets the height across the whole usable range:
+   * released = the bottom of the range, full forward = the top. Motion Magic sets the speed.
    */
   public Command followStick() {
     return run(() -> {
+          mode = "stick";
           double a = stickValue();
           a = Math.abs(a) < STICK_DEADBAND ? 0.0 : a;
-          targetInches = MathUtil.clamp(-a, 0.0, 1.0) * STICK_TOP_INCHES;
-          speedInPerSec = STICK_SPEED_IN_PER_SEC;
-          step();
+          double f = MathUtil.clamp(-a, 0.0, 1.0);
+          moveTo(lowInches() + f * (highInches() - lowInches()));
         })
         .withName("ElevatorFollowStick");
   }
 
+  /** Profiled move to a fixed height, held until interrupted (tests and scripts). */
+  public Command goTo(double inches) {
+    return run(() -> {
+          mode = "goto";
+          moveTo(inches);
+        })
+        .withName("ElevatorGoTo");
+  }
+
+  /** Holds the current target (or the current height, the first time). */
+  public Command hold() {
+    return startRun(() -> targetInches = positionInches, () -> {
+          mode = "hold";
+          moveTo(targetInches);
+        })
+        .withName("ElevatorHold");
+  }
+
   /**
-   * Auto-home: takes over the elevator, drives both motors DOWN at {@link #HOME_VOLTS} (low
-   * speed, low current) until the carriage stalls on the bottom hard stop (average stator
-   * current at least {@link #HOME_STALL_AMPS} while the speed is under {@link
-   * #HOME_STALL_SPEED_IN_PER_SEC}, for {@link #HOME_STALL_SECONDS}, never judged in the first
-   * {@link #HOME_GRACE_SECONDS}), then stops, makes that position 0 in, re-arms the soft limits
-   * and ends so the stick takes over again. On a timeout it sets no zero. The reverse soft limit
-   * is off while it runs, since the zero it replaces may be wrong. Disabling cancels it.
+   * The dance: plays {@link Dance#BEATS} in a loop for DanceSeconds (Tuning), then goes to the
+   * bottom of the range. Waits for a range first if there is none.
    */
-  public Command autoHome() {
+  public Command dance() {
+    Timer t = new Timer();
+    Command play =
+        new FunctionalCommand(
+            t::restart,
+            () -> {
+              mode = "dance";
+              int beat = Dance.beatAt(t.get());
+              danceBeat = beat;
+              double f = Dance.BEATS.get(beat).fraction();
+              moveTo(lowInches() + f * (highInches() - lowInches()));
+            },
+            interrupted -> {
+              danceBeat = -1;
+              moveTo(lowInches());
+            },
+            () -> t.get() >= tuning.get("DanceSeconds"),
+            this);
+    return rangeIfNeeded().andThen(play).withName("ElevatorDance");
+  }
+
+  /** Runs auto-range first if the stops have not been found yet. */
+  public Command rangeIfNeeded() {
+    return Commands.either(Commands.none(), autoRange(), () -> ranged);
+  }
+
+  // ---------------------------------------------------------------- auto-range
+
+  private enum RangePhase { DOWN, CLIMB, CREEP, DONE, FAILED }
+
+  /**
+   * Auto-range: finds the bottom stop (creep down at {@link #RANGE_DOWN_VOLTS} until the stall,
+   * then zero there), climbs with a profile to {@link #RANGE_CREEP_START_BELOW_TOP_INCHES} below
+   * the nominal top, creeps up at {@link #RANGE_UP_VOLTS} until the top stall, and takes that as
+   * the travel if it is within {@link #TRAVEL_TOLERANCE_INCHES} of nominal. Then the soft limits
+   * are set just inside both stops and the stick's full range becomes the measured one. The soft
+   * limit in the searched direction is off while it searches. Disabling cancels it.
+   */
+  public Command autoRange() {
+    var s = new Object() {
+      RangePhase phase;
+      double phaseTime;
+      double speed;
+    };
     return new FunctionalCommand(
-            this::homeInit, this::homeStep, this::homeEnd, () -> homeStalled || homeElapsed >= HOME_TIMEOUT_SECONDS, this)
-        .withName("ElevatorAutoHome");
+            () -> {
+              rangeStatus = RangeStatus.RUNNING;
+              fault = false;
+              faultTimer = 0;
+              s.phase = RangePhase.DOWN;
+              s.phaseTime = 0;
+              s.speed = 0;
+              rangeStallSeconds = 0;
+              io.setSoftLimits(0, false, 0, false);
+            },
+            () -> {
+              mode = "range-" + s.phase.name().toLowerCase();
+              s.phaseTime += 0.02;
+              s.speed += 0.5 * (velocityInPerSec - s.speed);
+              rangeAmps = (Math.abs(rightStatorAmps) + Math.abs(leftStatorAmps)) / 2.0;
+              double ramp = Math.min(1.0, s.phaseTime / RANGE_RAMP_SECONDS);
+              switch (s.phase) {
+                case DOWN -> {
+                  volts(-RANGE_DOWN_VOLTS * ramp);
+                  if (stalled(s.phaseTime, s.speed, RANGE_DOWN_STALL_AMPS)) {
+                    bottomFoundInches = positionInches;
+                    io.setPositionInches(0);
+                    positionInches = rightInches = leftInches = 0;
+                    zeroKnown = true;
+                    s.phase = RangePhase.CLIMB;
+                    s.phaseTime = 0;
+                    rangeStallSeconds = 0;
+                  }
+                }
+                case CLIMB -> {
+                  double creepFrom = NOMINAL_TRAVEL_INCHES - RANGE_CREEP_START_BELOW_TOP_INCHES;
+                  closedLoop = true;
+                  targetInches = creepFrom;
+                  openLoopVolts = 0;
+                  if (blocked()) io.neutral(); else io.moveTo(creepFrom);
+                  if (Math.abs(positionInches - creepFrom) < 0.15 && Math.abs(s.speed) < 1.0) {
+                    s.phase = RangePhase.CREEP;
+                    s.phaseTime = 0;
+                  }
+                }
+                case CREEP -> {
+                  volts(RANGE_UP_VOLTS * Math.max(ramp, 0.5));
+                  if (stalled(s.phaseTime, s.speed, RANGE_UP_STALL_AMPS)) {
+                    topFoundInches = positionInches;
+                    if (Math.abs(topFoundInches - NOMINAL_TRAVEL_INCHES) <= TRAVEL_TOLERANCE_INCHES) {
+                      travelInches = topFoundInches;
+                      ranged = true;
+                      s.phase = RangePhase.DONE;
+                    } else {
+                      s.phase = RangePhase.FAILED;
+                    }
+                  } else if (positionInches > NOMINAL_TRAVEL_INCHES + TRAVEL_TOLERANCE_INCHES) {
+                    topFoundInches = positionInches;
+                    s.phase = RangePhase.FAILED;
+                  }
+                }
+                default -> {}
+              }
+              if (s.phaseTime > RANGE_PHASE_TIMEOUT_SECONDS) {
+                s.phase = RangePhase.FAILED;
+              }
+            },
+            interrupted -> {
+              // Soft limits from what is known now (nominal travel if the top was not found).
+              io.setSoftLimits(
+                  SOFT_LIMIT_MARGIN_INCHES, true, travelInches - SOFT_LIMIT_MARGIN_INCHES, true);
+              if (interrupted) {
+                rangeStatus = RangeStatus.INTERRUPTED;
+                stop();
+              } else if (s.phase == RangePhase.DONE) {
+                rangeStatus = RangeStatus.DONE;
+                moveTo(highInches()); // hold just below the top; the next command takes it from here
+              } else {
+                rangeStatus = RangeStatus.FAILED;
+                stop();
+                DriverStation.reportWarning(
+                    String.format(
+                        "Elevator auto-range failed (phase %s, top %.2f in): travel stays %.3f in",
+                        s.phase, topFoundInches, travelInches),
+                    false);
+              }
+              travelPub.set(travelInches);
+            },
+            () -> s.phase == RangePhase.DONE || s.phase == RangePhase.FAILED,
+            this)
+        .withName("ElevatorAutoRange");
   }
 
-  private void homeInit() {
-    homing = true;
-    homeStalled = false;
-    homeElapsed = 0.0;
-    homeStallSeconds = 0.0;
-    homeSpeedInPerSec = 0.0;
-    homeLastInches = positionInches();
-    homeStatus = 1;
-    fault = false;
-    faultTimer = 0;
-    drive = Drive.LEADER_FOLLOWER;
-    io.setReverseLimitEnabled(false);
+  private boolean stalled(double phaseTime, double speed, double amps) {
+    boolean now =
+        phaseTime >= RANGE_GRACE_SECONDS
+            && rangeAmps >= amps
+            && Math.abs(speed) < RANGE_STALL_SPEED_IN_PER_SEC;
+    rangeStallSeconds = now ? rangeStallSeconds + 0.02 : 0.0;
+    return rangeStallSeconds >= RANGE_STALL_SECONDS;
   }
 
-  private void homeStep() {
-    homeElapsed += 0.02;
-    double ramp = Math.min(1.0, homeElapsed / HOME_RAMP_SECONDS);
-    io.homeDrive(HOME_VOLTS * ramp);
+  // ---------------------------------------------------------------- test routines
 
-    // Speed from the position change, lightly filtered (the simulation has no velocity signal).
-    double now = positionInches();
-    double raw = (now - homeLastInches) / 0.02;
-    homeLastInches = now;
-    homeSpeedInPerSec += 0.25 * (raw - homeSpeedInPerSec);
-    homeAmps = (Math.abs(rightStatorAmps) + Math.abs(leftStatorAmps)) / 2.0;
-
-    boolean stalledNow =
-        homeElapsed >= HOME_GRACE_SECONDS
-            && homeAmps >= HOME_STALL_AMPS
-            && Math.abs(homeSpeedInPerSec) < HOME_STALL_SPEED_IN_PER_SEC;
-    homeStallSeconds = stalledNow ? homeStallSeconds + 0.02 : 0.0;
-    if (homeStallSeconds >= HOME_STALL_SECONDS) {
-      homeStalled = true;
-    }
+  /** The standard moves: {@link #MOVES_INCHES}, each held {@link #MOVES_HOLD_SECONDS}. */
+  public Command standardMoves() {
+    Timer t = new Timer();
+    return rangeIfNeeded()
+        .andThen(
+            new FunctionalCommand(
+                t::restart,
+                () -> {
+                  mode = "moves";
+                  int i = (int) Math.min(MOVES_INCHES.length - 1, Math.floor(t.get() / MOVES_HOLD_SECONDS));
+                  moveIndex = i;
+                  moveTo(MOVES_INCHES[i]);
+                },
+                interrupted -> moveIndex = -1,
+                () -> t.get() >= MOVES_INCHES.length * MOVES_HOLD_SECONDS,
+                this))
+        .withName("ElevatorMoves");
   }
 
-  private void homeEnd(boolean interrupted) {
-    io.neutral();
-    io.setReverseLimitEnabled(true);
-    homing = false;
-    if (interrupted) {
-      homeStatus = 4;
-    } else if (homeStalled) {
-      homeFoundInches = positionInches();
-      io.zero();
-      rightInches = 0.0;
-      leftInches = 0.0;
-      setpointInches = 0.0;
-      targetInches = 0.0;
-      homeStatus = 2;
-    } else {
-      homeStatus = 3;
-      DriverStation.reportWarning("Elevator auto-home timed out without a stall: zero not changed", false);
-    }
-    homeOffsetPub.set(homeFoundInches);
+  /**
+   * Quasistatic characterization: from near the bottom, volts ramp up at {@link
+   * #QUASI_VOLTS_PER_SEC} until {@link #CHAR_GUARD_INCHES} below the top; brake and hold; then
+   * from 0 V ramp down until the same distance above the bottom; brake and hold. The log's
+   * volts and velocity give kS, kG and kV.
+   */
+  public Command quasistatic() {
+    return rangeIfNeeded()
+        .andThen(goAndSettle(lowInches() + 0.25))
+        .andThen(rampUntil(+QUASI_VOLTS_PER_SEC, () -> positionInches >= highInches() - CHAR_GUARD_INCHES))
+        .andThen(brakeThenSettle())
+        .andThen(rampUntil(-QUASI_VOLTS_PER_SEC, () -> positionInches <= lowInches() + CHAR_GUARD_INCHES))
+        .andThen(brakeThenSettle())
+        .withName("ElevatorQuasistatic");
   }
+
+  /** Dynamic characterization: a step of DynamicVolts up, then of DynamicVolts down; gives kA. */
+  public Command dynamic() {
+    return rangeIfNeeded()
+        .andThen(goAndSettle(lowInches() + 0.25))
+        .andThen(stepUntil(+1, () -> positionInches >= highInches() - CHAR_GUARD_INCHES))
+        .andThen(brakeThenSettle())
+        .andThen(stepUntil(-1, () -> positionInches <= lowInches() + CHAR_GUARD_INCHES))
+        .andThen(brakeThenSettle())
+        .withName("ElevatorDynamic");
+  }
+
+  private Command goAndSettle(double inches) {
+    return run(() -> { mode = "settle"; moveTo(inches); }).withTimeout(1.5);
+  }
+
+  private Command brakeThenSettle() {
+    return run(() -> { mode = "brake"; stop(); }).withTimeout(0.3)
+        .andThen(startRun(() -> targetInches = positionInches, () -> moveTo(targetInches)).withTimeout(0.7));
+  }
+
+  private Command rampUntil(double voltsPerSec, java.util.function.BooleanSupplier done) {
+    Timer t = new Timer();
+    return new FunctionalCommand(
+        t::restart,
+        () -> {
+          mode = "quasistatic";
+          volts(MathUtil.clamp(voltsPerSec * t.get(), -QUASI_MAX_VOLTS, QUASI_MAX_VOLTS));
+        },
+        interrupted -> stop(),
+        () -> done.getAsBoolean() || Math.abs(voltsPerSec * t.get()) >= QUASI_MAX_VOLTS,
+        this);
+  }
+
+  private Command stepUntil(double sign, java.util.function.BooleanSupplier done) {
+    return new FunctionalCommand(
+        () -> {},
+        () -> { mode = "dynamic"; volts(sign * tuning.get("DynamicVolts")); },
+        interrupted -> stop(),
+        done,
+        this).withTimeout(3.0);
+  }
+
+  // ---------------------------------------------------------------- the loop
 
   private static double stickValue() {
     return DriverStation.isJoystickConnected(STICK_PORT)
@@ -333,102 +549,117 @@ public class Elevator extends SubsystemBase {
         : 0.0;
   }
 
-  private void stepFromNetworkTables() {
-    double nt = targetSub.get();
-    if (!Double.isNaN(nt)) {
-      targetInches = clampToTravel(nt);
-    }
-    double speed = speedSub.get();
-    speedInPerSec =
-        Double.isNaN(speed) ? DEFAULT_SPEED_IN_PER_SEC : MathUtil.clamp(speed, 0.0, MAX_SPEED_IN_PER_SEC);
-    step();
-  }
-
-  private void step() {
-    double step = speedInPerSec * 0.02;
-    setpointInches += MathUtil.clamp(targetInches - setpointInches, -step, step);
-
-    if (fault) {
-      io.neutral();
-      return;
-    }
-    if (drive == Drive.LEADER_FOLLOWER) {
-      io.setLeaderFollower(setpointInches * MOTOR_ROTATIONS_PER_INCH);
-      return;
-    }
-    io.setPosition(
-        setpointInches * MOTOR_ROTATIONS_PER_INCH,
-        drive != Drive.LEFT_ONLY,
-        drive != Drive.RIGHT_ONLY);
-  }
-
   @Override
   public void periodic() {
     io.update();
-    rightInches = io.rightRotations() / MOTOR_ROTATIONS_PER_INCH;
-    leftInches = io.leftRotations() / MOTOR_ROTATIONS_PER_INCH;
+    readSensors();
+
+    boolean enabled = DriverStation.isEnabled();
+    aborted = abortSub.get();
+    if (tuning.refresh()) {
+      tuningDirty = true;
+    }
+    if (!enabled) {
+      mode = "disabled";
+      // Never jump on the next enable; clear a fault; write new tuning (the writes block).
+      targetInches = positionInches;
+      fault = false;
+      faultTimer = 0;
+      stop();
+      if (tuningDirty) {
+        applyTuning();
+      }
+    } else {
+      // Lag fault: judged only against a running profile.
+      profileErrorInches = Double.isNaN(profileInches) ? 0.0 : positionInches - profileInches;
+      faultTimer =
+          closedLoop && Math.abs(profileErrorInches) > FAULT_ERROR_INCHES ? faultTimer + 0.02 : 0.0;
+      if (faultTimer >= FAULT_SECONDS && !fault) {
+        fault = true;
+        DriverStation.reportWarning("Elevator lag fault: output cut until disabled", false);
+      }
+      if (fault || aborted) {
+        io.neutral();
+      }
+      handleRoutineRequest();
+    }
+    positionPub.set(positionInches);
+    targetPub.set(targetInches);
+    travelPub.set(travelInches);
+    routinePub.set(getCurrentCommand() == null ? "" : getCurrentCommand().getName());
+  }
+
+  /** Runs a routine named in /Elevator/Control/Routine when the name changes (while enabled). */
+  private void handleRoutineRequest() {
+    String req = routineSub.get();
+    if (req.equals(lastRoutineRequest)) {
+      return;
+    }
+    lastRoutineRequest = req;
+    Supplier<Command> make = routines.get(req);
+    if (make != null) {
+      Command c = make.get().finallyDo(() -> routineCountPub.set(++routinesDone));
+      c.schedule();
+    }
+  }
+
+  private void applyTuning() {
+    kS = tuning.get("kS");
+    kG = tuning.get("kG");
+    kV = tuning.get("kV");
+    kA = tuning.get("kA");
+    kP = tuning.get("kP");
+    kD = tuning.get("kD");
+    cruiseInPerSec = tuning.get("CruiseInPerSec");
+    accelInPerSec2 = tuning.get("AccelInPerSec2");
+    jerkInPerSec3 = tuning.get("JerkInPerSec3");
+    peakVolts = tuning.get("PeakVolts");
+    statorAmps = tuning.get("StatorAmps");
+    io.applyGains(new ElevatorIO.Gains(kS, kG, kV, kA, kP, kD, cruiseInPerSec, accelInPerSec2, jerkInPerSec3));
+    io.applyCaps(peakVolts, statorAmps);
+    tuningDirty = false;
+  }
+
+  private void readSensors() {
+    rightInches = io.rightInches();
+    leftInches = io.leftInches();
+    positionInches = rightInches; // the leader's encoder (the left reads differently; see NOTES.md)
+    sideDiffInches = rightInches - leftInches;
+    velocityInPerSec = io.velocityInPerSec();
+    profileInches = io.profileInches();
+    profileVelocityInPerSec = io.profileVelocityInPerSec();
     rightVolts = io.rightVolts();
     leftVolts = io.leftVolts();
     rightStatorAmps = io.rightStatorAmps();
     leftStatorAmps = io.leftStatorAmps();
-
-    var rightX = io.rightExtras();
-    var leftX = io.leftExtras();
-    rightVelocityRps = rightX.velocityRps();
-    rightSupplyAmps = rightX.supplyAmps();
-    rightTorqueAmps = rightX.torqueAmps();
-    rightDeviceTempC = rightX.deviceTempC();
-    rightProcessorTempC = rightX.processorTempC();
-    rightDuty = rightX.duty();
-    rightSupplyVolts = rightX.supplyVolts();
-    rightClosedLoopError = rightX.closedLoopError();
-    rightClosedLoopReference = rightX.closedLoopReference();
-    rightClosedLoopOutput = rightX.closedLoopOutput();
-    rightFaultField = rightX.faultField();
-    rightStickyFaultField = rightX.stickyFaultField();
-    leftVelocityRps = leftX.velocityRps();
-    leftSupplyAmps = leftX.supplyAmps();
-    leftTorqueAmps = leftX.torqueAmps();
-    leftDeviceTempC = leftX.deviceTempC();
-    leftProcessorTempC = leftX.processorTempC();
-    leftDuty = leftX.duty();
-    leftSupplyVolts = leftX.supplyVolts();
-    leftClosedLoopError = leftX.closedLoopError();
-    leftClosedLoopReference = leftX.closedLoopReference();
-    leftClosedLoopOutput = leftX.closedLoopOutput();
-    leftFaultField = leftX.faultField();
-    leftStickyFaultField = leftX.stickyFaultField();
+    var r = io.rightExtras();
+    var l = io.leftExtras();
+    rightVelocityRps = r.velocityRps();
+    rightSupplyAmps = r.supplyAmps();
+    rightTorqueAmps = r.torqueAmps();
+    rightDeviceTempC = r.deviceTempC();
+    rightProcessorTempC = r.processorTempC();
+    rightDuty = r.duty();
+    rightSupplyVolts = r.supplyVolts();
+    rightClosedLoopError = r.closedLoopError();
+    rightClosedLoopReference = r.closedLoopReference();
+    rightClosedLoopOutput = r.closedLoopOutput();
+    rightFaultField = r.faultField();
+    rightStickyFaultField = r.stickyFaultField();
+    leftVelocityRps = l.velocityRps();
+    leftSupplyAmps = l.supplyAmps();
+    leftTorqueAmps = l.torqueAmps();
+    leftDeviceTempC = l.deviceTempC();
+    leftProcessorTempC = l.processorTempC();
+    leftDuty = l.duty();
+    leftSupplyVolts = l.supplyVolts();
+    leftFaultField = l.faultField();
+    leftStickyFaultField = l.stickyFaultField();
     batteryVolts = RobotController.getBatteryVoltage();
     browningOut = RobotController.isBrownedOut();
     canUtilization = RobotController.getCANStatus().percentBusUtilization;
     loopMs = (Timer.getFPGATimestamp() - lastPeriodic) * 1000.0;
     lastPeriodic = Timer.getFPGATimestamp();
-    joystickAxis = DriverStation.isJoystickConnected(0) ? DriverStation.getStickAxis(0, 1) : 0.0;
-
-    boolean enabled = DriverStation.isEnabled();
-    if (!enabled) {
-      // The carriage is taken to be on the bottom stop whenever disabled: zero the encoders here,
-      // so every enable starts at 0 in. Hold the target and setpoint there (never jump on
-      // enable); clear a fault.
-      io.zero();
-      rightInches = 0.0;
-      leftInches = 0.0;
-      setpointInches = 0.0;
-      targetInches = setpointInches;
-      fault = false;
-      faultTimer = 0;
-      drive = Drive.LEADER_FOLLOWER;
-      io.neutral();
-    } else {
-      double worst =
-          Math.max(Math.abs(rightInches - setpointInches), Math.abs(leftInches - setpointInches));
-      faultTimer = !homing && worst > FAULT_ERROR_INCHES ? faultTimer + 0.02 : 0.0;
-      if (faultTimer >= FAULT_SECONDS) {
-        fault = true;
-      }
-    }
-    driveMode = drive.ordinal();
-    positionPub.set(positionInches());
-    setpointPub.set(setpointInches);
+    joystickAxis = stickValue();
   }
 }
