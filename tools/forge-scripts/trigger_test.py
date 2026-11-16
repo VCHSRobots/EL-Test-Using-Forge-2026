@@ -6,11 +6,12 @@ import forge_lab as f
 # Trigger test (1b) on one enable. Caps 6 V and 40 A. Full travel at 30 in/s, 200 in/s^2, ONE motor alone.
 # fulltravel_noconfig: a routine start only switches the control requests (no config writes).
 # fulltravel_reconfig: a routine start also rewrites every config (as soloright does).
-# Right motor 4+4 alternating, then left motor 4+4 alternating. Scored afterwards from the robot
+# Right motor 4+4 alternating, then left motor 4+4 alternating (reconfig first on the left, which
+# writes its gains; a no-config start needs gains already written). Scored afterwards from the robot
 # log (apparent back-EMF at cruise per start): whichever kind of start jumps is the trigger.
 # At the end the stand parks with motors off and the script waits for YOUR disable.
 ORDER = (('N', 'fulltravel_noconfig'), ('R', 'fulltravel_reconfig')) * 4 \
-      + (('N', 'fulltravel_noconfig_left'), ('R', 'fulltravel_reconfig_left')) * 4
+      + (('R', 'fulltravel_reconfig_left'), ('N', 'fulltravel_noconfig_left')) * 4
 SOLO_MOTION = (30, 200)      # cruise in/s, accel in/s^2
 PEAK_VOLTS, AMPS = 6.0, 40
 FULL_SECONDS = 8.0           # the routine is 5 targets x 1.5 s
