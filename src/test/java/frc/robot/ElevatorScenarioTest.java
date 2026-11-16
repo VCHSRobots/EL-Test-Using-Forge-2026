@@ -10,6 +10,7 @@ import edu.wpi.first.wpilibj2.command.Command;
 import frc.robot.hardware.KnownUnits;
 import frc.robot.subsystems.Elevator;
 import frc.robot.subsystems.Elevator.RangeStatus;
+import frc.robot.subsystems.ElevatorIO;
 import frc.robot.subsystems.SimElevatorIO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -391,6 +392,71 @@ class ElevatorScenarioTest {
       assertTrue(firstAtTop > 1.5 && firstAtTop < 2.1, "first top at " + firstAtTop);
       assertEquals(e.lowInches(), e.positionInches(), 0.03);
       assertFalse(e.faulted());
+    }
+  }
+
+  @Test
+  void isolationRoutinesDriveWithOneMotorOrTheLeftLeadingThenGoBackToNormal() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.tuning().set("PeakVolts", 6);
+      e.tuning().set("StatorAmps", 40);
+      e.tuning().set("CruiseInPerSec", 30);
+      e.tuning().set("AccelInPerSec2", 200);
+      var routine = NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine");
+      String[] names = {"soloright", "sololeft", "leftleads"};
+      ElevatorIO.Drive[] drives = {
+        ElevatorIO.Drive.RIGHT_ALONE, ElevatorIO.Drive.LEFT_ALONE, ElevatorIO.Drive.LEFT_LEADS
+      };
+      for (int n = 0; n < names.length; n++) {
+        routine.setString("park");
+        sc.run(3.0);
+        assertEquals(ElevatorIO.Drive.RIGHT_LEADS, io.drive());
+        routine.setString(names[n]);
+        double lowest = 99, highest = -99, worstErr = 0, idleAmps = 0, t = 0;
+        boolean sawDrive = false;
+        for (int i = 0; i < 400; i++) {
+          sc.run(0.02);
+          t += 0.02;
+          double x = io.physicalInches();
+          if (t > 1.5) lowest = Math.min(lowest, x);
+          highest = Math.max(highest, x);
+          if (io.drive() == drives[n]) {
+            sawDrive = true;
+            double err = io.profileErrorInches();
+            if (!Double.isNaN(err)) worstErr = Math.max(worstErr, Math.abs(err));
+            // Alone: the other motor coasts and carries nothing.
+            if (drives[n] == ElevatorIO.Drive.RIGHT_ALONE) idleAmps = Math.max(idleAmps, Math.abs(io.leftStatorAmps()));
+            if (drives[n] == ElevatorIO.Drive.LEFT_ALONE) idleAmps = Math.max(idleAmps, Math.abs(io.rightStatorAmps()));
+          }
+        }
+        System.out.printf("%s: %.3f..%.3f in, worst path error %.3f in%n", names[n], lowest, highest, worstErr);
+        assertTrue(sawDrive, names[n]);
+        assertEquals(0.0, idleAmps, 1e-9);
+        assertTrue(highest <= e.highInches() + 0.03, "highest " + highest);
+        assertTrue(highest >= e.highInches() - 0.05, "highest " + highest);
+        assertTrue(lowest >= e.lowInches() - 0.03, "lowest " + lowest);
+        assertTrue(worstErr < 0.1, "path error " + worstErr);
+        assertFalse(e.faulted());
+        // Back to normal once it ends.
+        assertEquals(ElevatorIO.Drive.RIGHT_LEADS, io.drive());
+      }
+    }
+  }
+
+  @Test
+  void aDisableDuringAnIsolationRoutinePutsTheRightBackInTheLead() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine").setString("sololeft");
+      sc.run(1.0);
+      assertEquals(ElevatorIO.Drive.LEFT_ALONE, io.drive());
+      sc.disable();
+      sc.run(0.1);
+      assertEquals(ElevatorIO.Drive.RIGHT_LEADS, io.drive());
+      assertFalse(e.isParked());
     }
   }
 }

@@ -3,10 +3,49 @@ package frc.robot.subsystems;
 /**
  * What the Elevator needs from its two motors. Everything is in INCHES of carriage travel (up
  * positive) and volts; the implementations convert to motor rotations. {@link TalonElevatorIO} is
- * the real hardware (each motor runs its own loop with its own gearing); {@link SimElevatorIO} is plain
- * Java physics for simulation and tests.
+ * the real hardware (one loop in the leader, the other motor follows it); {@link SimElevatorIO} is
+ * plain Java physics for simulation and tests.
  */
 public interface ElevatorIO {
+  /**
+   * Which motor runs the loop. RIGHT_LEADS is normal (the left follows). The others are for
+   * isolation tests only: LEFT_LEADS swaps the roles; RIGHT_ALONE / LEFT_ALONE drive with one
+   * motor while the other coasts (no output at all), with the leader's kS, kG and kA doubled
+   * because one motor does the pair's work.
+   */
+  enum Drive { RIGHT_LEADS, LEFT_LEADS, RIGHT_ALONE, LEFT_ALONE }
+
+  /** Feedforward on a motor driving alone: kS, kG and kA times this (kV is per motor speed). */
+  double ALONE_FEEDFORWARD_SCALE = 2.0;
+
+  /**
+   * Switches which motor leads. Puts both motors in neutral first and rewrites the leader's
+   * configs (may block ~200 ms): call with the carriage at rest. No-op if already in that drive.
+   */
+  default void setDrive(Drive drive) {}
+
+  default Drive drive() {
+    return Drive.RIGHT_LEADS;
+  }
+
+  /**
+   * Right minus left height, both read for the SAME instant (each latency-compensated to now);
+   * near direction reversals this shows backlash between the two sides.
+   */
+  default double alignedSideDiffInches() {
+    return rightInches() - leftInches();
+  }
+
+  /** The faults active now on one motor, by CTRE's names, comma-separated ("" for none). */
+  default String faultNames(boolean rightMotor) {
+    return "";
+  }
+
+  /** The sticky faults (set since the last clear) on one motor, by name. */
+  default String stickyFaultNames(boolean rightMotor) {
+    return "";
+  }
+
   /**
    * Feedforward, feedback and profile settings, all in inch units: kS, kG volts; kV volts per
    * in/s; kA volts per in/s^2; kP volts per inch of error; kD volts per in/s of error; cruise in/s,
