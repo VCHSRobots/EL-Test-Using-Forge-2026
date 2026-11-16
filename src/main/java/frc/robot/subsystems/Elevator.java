@@ -92,6 +92,12 @@ public class Elevator extends SubsystemBase {
   /** The standard move sequence (inches) and how long each target is held. */
   public static final double[] MOVES_INCHES = {1.0, 8.0, 4.5, 1.0};
   public static final double MOVES_HOLD_SECONDS = 1.5;
+  /**
+   * The full-travel moves: bottom -> top -> bottom -> top -> bottom of the range (0.25 in inside
+   * each stop, so about 8.9 in each way), each target held {@link #FULL_TRAVEL_HOLD_SECONDS}.
+   */
+  public static final int FULL_TRAVEL_TARGETS = 5;
+  public static final double FULL_TRAVEL_HOLD_SECONDS = 1.5;
   /** Quasistatic ramp rate and ceiling. */
   public static final double QUASI_VOLTS_PER_SEC = 0.25;
   public static final double QUASI_MAX_VOLTS = 2.0;
@@ -221,6 +227,7 @@ public class Elevator extends SubsystemBase {
         Map.of(
             "range", this::autoRange,
             "moves", this::standardMoves,
+            "fulltravel", this::fullTravelMoves,
             "quasistatic", this::quasistatic,
             "dynamic", this::dynamic,
             "dance", this::dance,
@@ -534,6 +541,29 @@ public class Elevator extends SubsystemBase {
                 () -> t.get() >= MOVES_INCHES.length * MOVES_HOLD_SECONDS,
                 this))
         .withName("ElevatorMoves");
+  }
+
+  /**
+   * Full-travel moves, for timing a move across the whole range: the bottom of the range, then
+   * the top, alternating, {@link #FULL_TRAVEL_TARGETS} targets each held {@link
+   * #FULL_TRAVEL_HOLD_SECONDS}. Never closer to a stop than {@link #STOP_MARGIN_INCHES}.
+   */
+  public Command fullTravelMoves() {
+    Timer t = new Timer();
+    return rangeIfNeeded()
+        .andThen(
+            new FunctionalCommand(
+                t::restart,
+                () -> {
+                  mode = "fulltravel";
+                  int i = (int) Math.min(FULL_TRAVEL_TARGETS - 1, Math.floor(t.get() / FULL_TRAVEL_HOLD_SECONDS));
+                  moveIndex = i;
+                  moveTo(i % 2 == 0 ? lowInches() : highInches());
+                },
+                interrupted -> moveIndex = -1,
+                () -> t.get() >= FULL_TRAVEL_TARGETS * FULL_TRAVEL_HOLD_SECONDS,
+                this))
+        .withName("ElevatorFullTravel");
   }
 
   /**

@@ -361,4 +361,36 @@ class ElevatorScenarioTest {
       assertFalse(e.faulted());
     }
   }
+
+  @Test
+  void fullTravelRoutineCrossesTheRangeQuicklyAndStaysOffTheStops() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.tuning().set("PeakVolts", 6);
+      e.tuning().set("CruiseInPerSec", 45);
+      e.tuning().set("AccelInPerSec2", 200);
+      e.park().schedule();
+      sc.run(3.0);
+      NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine").setString("fulltravel");
+      double lowest = 99, highest = -99, firstAtTop = -1, t = 0;
+      for (int i = 0; i < 400; i++) {
+        sc.run(0.02);
+        t += 0.02;
+        double x = io.physicalInches();
+        // (parked, the carriage may have settled onto the bottom stop; judge the low end after
+        // the first trip up)
+        if (firstAtTop >= 0) lowest = Math.min(lowest, x);
+        highest = Math.max(highest, x);
+        if (firstAtTop < 0 && x >= e.highInches() - 0.05) firstAtTop = t;
+      }
+      System.out.printf("fulltravel: %.3f..%.3f in, first top at %.2f s%n", lowest, highest, firstAtTop);
+      assertTrue(highest <= e.highInches() + 0.03, "highest " + highest);
+      assertTrue(lowest >= e.lowInches() - 0.03, "lowest " + lowest);
+      // 1.5 s at the bottom, then about 0.45 s across the range at 45 in/s, 200 in/s^2.
+      assertTrue(firstAtTop > 1.5 && firstAtTop < 2.1, "first top at " + firstAtTop);
+      assertEquals(e.lowInches(), e.positionInches(), 0.03);
+      assertFalse(e.faulted());
+    }
+  }
 }
