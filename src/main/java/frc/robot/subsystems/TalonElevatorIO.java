@@ -8,6 +8,8 @@ import com.ctre.phoenix6.configs.Slot0Configs;
 import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.configs.VoltageConfigs;
+import com.ctre.phoenix6.controls.CoastOut;
+import com.ctre.phoenix6.controls.ControlRequest;
 import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.MotionMagicVoltage;
 import com.ctre.phoenix6.controls.NeutralOut;
@@ -20,6 +22,9 @@ import com.ctre.phoenix6.signals.MotorAlignmentValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 import com.ctre.phoenix6.signals.StaticFeedforwardSignValue;
 import frc.robot.hardware.Unit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Function;
 
 /**
  * The two Kraken X44 motors on one shaft. The right motor counter-clockwise raises the carriage
@@ -38,6 +43,10 @@ import frc.robot.hardware.Unit;
  * volts the left, spinning 15/16 as fast, has less back-EMF and carries more current while moving
  * (about 0.1 A more per in/s); holding still they carry the same. The left has no soft limits of
  * its own, so it can never stop following on its own: the right's soft limits guard both.
+ *
+ * <p>For isolation tests only ({@link Drive}): the left can lead with the right following, or one
+ * motor can drive alone with the other coasting. The leader always has the gains, Motion Magic
+ * and the soft limits; the other motor never has soft limits. Each fault is also read by name.
  */
 public class TalonElevatorIO implements ElevatorIO {
   private static final double CONFIG_TIMEOUT_S = 0.05;
@@ -47,30 +56,56 @@ public class TalonElevatorIO implements ElevatorIO {
   private final TalonFX left;
   private final MotionMagicVoltage move = new MotionMagicVoltage(0).withEnableFOC(false);
   private final VoltageOut voltsReq = new VoltageOut(0).withEnableFOC(false);
-  private final Follower follow;
+  private final Follower followRight;
+  private final Follower followLeft;
+  private final CoastOut coast = new CoastOut();
   private final NeutralOut neutral = new NeutralOut();
   private final StatusSignal<?>[] rightSignals;
   private final StatusSignal<?>[] leftSignals;
-  private final StatusSignal<Double> refSlope;
-  private final StatusSignal<ControlModeValue> controlMode;
+  private final StatusSignal<Double> rightRefSlope;
+  private final StatusSignal<Double> leftRefSlope;
+  private final StatusSignal<ControlModeValue> rightControlMode;
+  private final StatusSignal<ControlModeValue> leftControlMode;
+  private final List<NamedFault> rightFaults;
+  private final List<NamedFault> leftFaults;
+  private Drive drive = Drive.RIGHT_LEADS;
+  private Gains gains = Elevator.DEFAULT_GAINS;
+  // The soft limits the leader gets (the last ones asked for).
+  private double reverseLimit = Elevator.SOFT_LIMIT_MARGIN_INCHES;
+  private double forwardLimit = Elevator.NOMINAL_TRAVEL_INCHES - Elevator.SOFT_LIMIT_MARGIN_INCHES;
+  private boolean reverseLimitOn = true;
+  private boolean forwardLimitOn = true;
   private Extras rightX = Extras.ZERO;
   private Extras leftX = Extras.ZERO;
 
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
     left = new TalonFX(unit.leftMotorId());
-    follow = new Follower(right.getDeviceID(), MotorAlignmentValue.Opposed);
+    followRight = new Follower(right.getDeviceID(), MotorAlignmentValue.Opposed);
+    followLeft = new Follower(left.getDeviceID(), MotorAlignmentValue.Opposed);
     configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), true);
     configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), false);
     right.setPosition(0);
     left.setPosition(0);
     rightSignals = signalsOf(right);
     leftSignals = signalsOf(left);
-    refSlope = right.getClosedLoopReferenceSlope();
-    controlMode = right.getControlMode();
+    rightRefSlope = right.getClosedLoopReferenceSlope();
+    leftRefSlope = left.getClosedLoopReferenceSlope();
+    rightControlMode = right.getControlMode();
+    leftControlMode = left.getControlMode();
+    rightFaults = faultsOf(right);
+    leftFaults = faultsOf(left);
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, rightSignals);
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, leftSignals);
-    BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, refSlope, controlMode);
+    BaseStatusSignal.setUpdateFrequencyForAll(
+        LOG_HZ, rightRefSlope, leftRefSlope, rightControlMode, leftControlMode);
+    for (List<NamedFault> list : List.of(rightFaults, leftFaults)) {
+      for (NamedFault f : list) {
+        BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, f.now(), f.sticky());
+      }
+    }
+    right.clearStickyFaults();
+    left.clearStickyFaults();
     right.optimizeBusUtilization();
     left.optimizeBusUtilization();
   }
@@ -92,6 +127,56 @@ public class TalonElevatorIO implements ElevatorIO {
       v[i] = s[i].getValueAsDouble();
     }
     return new Extras(v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14]);
+  }
+
+  /** One fault by CTRE's name: now and sticky. */
+  private record NamedFault(String name, StatusSignal<Boolean> now, StatusSignal<Boolean> sticky) {}
+
+  private static NamedFault fault(
+      TalonFX m, String name, Function<TalonFX, StatusSignal<Boolean>> now,
+      Function<TalonFX, StatusSignal<Boolean>> sticky) {
+    return new NamedFault(name, now.apply(m), sticky.apply(m));
+  }
+
+  /** Every fault a TalonFX reports (Phoenix 6 26.3), so a fault bit can be named in the log. */
+  private static List<NamedFault> faultsOf(TalonFX m) {
+    List<NamedFault> f = new ArrayList<>();
+    f.add(fault(m, "Hardware", TalonFX::getFault_Hardware, TalonFX::getStickyFault_Hardware));
+    f.add(fault(m, "ProcTemp", TalonFX::getFault_ProcTemp, TalonFX::getStickyFault_ProcTemp));
+    f.add(fault(m, "DeviceTemp", TalonFX::getFault_DeviceTemp, TalonFX::getStickyFault_DeviceTemp));
+    f.add(fault(m, "Undervoltage", TalonFX::getFault_Undervoltage, TalonFX::getStickyFault_Undervoltage));
+    f.add(fault(m, "BootDuringEnable", TalonFX::getFault_BootDuringEnable, TalonFX::getStickyFault_BootDuringEnable));
+    f.add(fault(m, "UnlicensedFeatureInUse", TalonFX::getFault_UnlicensedFeatureInUse, TalonFX::getStickyFault_UnlicensedFeatureInUse));
+    f.add(fault(m, "BridgeBrownout", TalonFX::getFault_BridgeBrownout, TalonFX::getStickyFault_BridgeBrownout));
+    f.add(fault(m, "RemoteSensorReset", TalonFX::getFault_RemoteSensorReset, TalonFX::getStickyFault_RemoteSensorReset));
+    f.add(fault(m, "MissingDifferentialFX", TalonFX::getFault_MissingDifferentialFX, TalonFX::getStickyFault_MissingDifferentialFX));
+    f.add(fault(m, "RemoteSensorPosOverflow", TalonFX::getFault_RemoteSensorPosOverflow, TalonFX::getStickyFault_RemoteSensorPosOverflow));
+    f.add(fault(m, "OverSupplyV", TalonFX::getFault_OverSupplyV, TalonFX::getStickyFault_OverSupplyV));
+    f.add(fault(m, "UnstableSupplyV", TalonFX::getFault_UnstableSupplyV, TalonFX::getStickyFault_UnstableSupplyV));
+    f.add(fault(m, "ReverseHardLimit", TalonFX::getFault_ReverseHardLimit, TalonFX::getStickyFault_ReverseHardLimit));
+    f.add(fault(m, "ForwardHardLimit", TalonFX::getFault_ForwardHardLimit, TalonFX::getStickyFault_ForwardHardLimit));
+    f.add(fault(m, "ReverseSoftLimit", TalonFX::getFault_ReverseSoftLimit, TalonFX::getStickyFault_ReverseSoftLimit));
+    f.add(fault(m, "ForwardSoftLimit", TalonFX::getFault_ForwardSoftLimit, TalonFX::getStickyFault_ForwardSoftLimit));
+    f.add(fault(m, "MissingSoftLimitRemote", TalonFX::getFault_MissingSoftLimitRemote, TalonFX::getStickyFault_MissingSoftLimitRemote));
+    f.add(fault(m, "MissingHardLimitRemote", TalonFX::getFault_MissingHardLimitRemote, TalonFX::getStickyFault_MissingHardLimitRemote));
+    f.add(fault(m, "RemoteSensorDataInvalid", TalonFX::getFault_RemoteSensorDataInvalid, TalonFX::getStickyFault_RemoteSensorDataInvalid));
+    f.add(fault(m, "FusedSensorOutOfSync", TalonFX::getFault_FusedSensorOutOfSync, TalonFX::getStickyFault_FusedSensorOutOfSync));
+    f.add(fault(m, "StatorCurrLimit", TalonFX::getFault_StatorCurrLimit, TalonFX::getStickyFault_StatorCurrLimit));
+    f.add(fault(m, "SupplyCurrLimit", TalonFX::getFault_SupplyCurrLimit, TalonFX::getStickyFault_SupplyCurrLimit));
+    f.add(fault(m, "UsingFusedCANcoderWhileUnlicensed", TalonFX::getFault_UsingFusedCANcoderWhileUnlicensed, TalonFX::getStickyFault_UsingFusedCANcoderWhileUnlicensed));
+    f.add(fault(m, "StaticBrakeDisabled", TalonFX::getFault_StaticBrakeDisabled, TalonFX::getStickyFault_StaticBrakeDisabled));
+    return f;
+  }
+
+  private static String names(List<NamedFault> faults, boolean sticky) {
+    StringBuilder b = new StringBuilder();
+    for (NamedFault f : faults) {
+      if (Boolean.TRUE.equals((sticky ? f.sticky() : f.now()).getValue())) {
+        if (b.length() > 0) b.append(',');
+        b.append(f.name());
+      }
+    }
+    return b.toString();
   }
 
   /** leader: the right Talon, with the gains and soft limits; the follower gets neither. */
@@ -146,8 +231,67 @@ public class TalonElevatorIO implements ElevatorIO {
   @Override
   public void applyGains(Gains g) {
     // Only the leader runs the loop; the follower copies its volts.
-    right.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S);
-    right.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
+    gains = g;
+    configureLeader(leader());
+  }
+
+  private boolean alone() {
+    return drive == Drive.RIGHT_ALONE || drive == Drive.LEFT_ALONE;
+  }
+
+  private TalonFX leader() {
+    return drive == Drive.LEFT_LEADS || drive == Drive.LEFT_ALONE ? left : right;
+  }
+
+  private TalonFX other() {
+    return leader() == right ? left : right;
+  }
+
+  /** What the motor that does not lead does: follow the leader, or coast (alone). */
+  private ControlRequest otherRequest() {
+    if (alone()) return coast;
+    return leader() == right ? followRight : followLeft;
+  }
+
+  /** The leader's gains (feedforward doubled when it drives alone), Motion Magic and soft limits. */
+  private void configureLeader(TalonFX m) {
+    Gains g = gains;
+    if (alone()) {
+      double k = ALONE_FEEDFORWARD_SCALE;
+      g = new Gains(g.kS() * k, g.kG() * k, g.kV(), g.kA() * k, g.kP(), g.kD(),
+          g.cruiseInPerSec(), g.accelInPerSec2(), g.jerkInPerSec3());
+    }
+    m.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S);
+    m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
+    m.getConfigurator().apply(softLimits(), CONFIG_TIMEOUT_S);
+  }
+
+  private SoftwareLimitSwitchConfigs softLimits() {
+    var s = new SoftwareLimitSwitchConfigs();
+    s.ReverseSoftLimitThreshold = reverseLimit;
+    s.ReverseSoftLimitEnable = reverseLimitOn;
+    s.ForwardSoftLimitThreshold = forwardLimit;
+    s.ForwardSoftLimitEnable = forwardLimitOn;
+    return s;
+  }
+
+  @Override
+  public void setDrive(Drive d) {
+    if (d == drive) return;
+    right.setControl(neutral);
+    left.setControl(neutral);
+    drive = d;
+    // The non-leader must never stop following because of a soft limit of its own.
+    other().getConfigurator().apply(new SoftwareLimitSwitchConfigs(), CONFIG_TIMEOUT_S);
+    configureLeader(leader());
+    // So the sticky faults of each test belong to that test.
+    right.clearStickyFaults();
+    left.clearStickyFaults();
+  }
+
+  @Override
+  public Drive drive() {
+    return drive;
   }
 
   @Override
@@ -168,25 +312,24 @@ public class TalonElevatorIO implements ElevatorIO {
 
   @Override
   public void setSoftLimits(double reverseInches, boolean reverseOn, double forwardInches, boolean forwardOn) {
-    var s = new SoftwareLimitSwitchConfigs();
-    s.ReverseSoftLimitThreshold = reverseInches;
-    s.ReverseSoftLimitEnable = reverseOn;
-    s.ForwardSoftLimitThreshold = forwardInches;
-    s.ForwardSoftLimitEnable = forwardOn;
+    reverseLimit = reverseInches;
+    reverseLimitOn = reverseOn;
+    forwardLimit = forwardInches;
+    forwardLimitOn = forwardOn;
     // The leader's only: the follower must never stop following on its own.
-    right.getConfigurator().apply(s, CONFIG_TIMEOUT_S);
+    leader().getConfigurator().apply(softLimits(), CONFIG_TIMEOUT_S);
   }
 
   @Override
   public void moveTo(double inches) {
-    right.setControl(move.withPosition(inches));
-    left.setControl(follow);
+    leader().setControl(move.withPosition(inches));
+    other().setControl(otherRequest());
   }
 
   @Override
   public void setVolts(double volts) {
-    right.setControl(voltsReq.withOutput(volts));
-    left.setControl(follow);
+    leader().setControl(voltsReq.withOutput(volts));
+    other().setControl(otherRequest());
   }
 
   @Override
@@ -205,13 +348,43 @@ public class TalonElevatorIO implements ElevatorIO {
   public void update() {
     BaseStatusSignal.refreshAll(rightSignals);
     BaseStatusSignal.refreshAll(leftSignals);
-    BaseStatusSignal.refreshAll(refSlope, controlMode);
+    BaseStatusSignal.refreshAll(rightRefSlope, leftRefSlope, rightControlMode, leftControlMode);
+    for (List<NamedFault> list : List.of(rightFaults, leftFaults)) {
+      for (NamedFault f : list) {
+        BaseStatusSignal.refreshAll(f.now(), f.sticky());
+      }
+    }
     rightX = extrasOf(rightSignals);
     leftX = extrasOf(leftSignals);
   }
 
+  private boolean leftLeads() {
+    return leader() == left;
+  }
+
   private boolean profiling() {
-    return controlMode.getValue() == ControlModeValue.MotionMagicVoltage;
+    var mode = leftLeads() ? leftControlMode : rightControlMode;
+    return mode.getValue() == ControlModeValue.MotionMagicVoltage;
+  }
+
+  private Extras leaderX() {
+    return leftLeads() ? leftX : rightX;
+  }
+
+  @Override
+  public double alignedSideDiffInches() {
+    return BaseStatusSignal.getLatencyCompensatedValueAsDouble(rightSignals[0], rightSignals[3])
+        - BaseStatusSignal.getLatencyCompensatedValueAsDouble(leftSignals[0], leftSignals[3]);
+  }
+
+  @Override
+  public String faultNames(boolean rightMotor) {
+    return names(rightMotor ? rightFaults : leftFaults, false);
+  }
+
+  @Override
+  public String stickyFaultNames(boolean rightMotor) {
+    return names(rightMotor ? rightFaults : leftFaults, true);
   }
 
   @Override public Extras rightExtras() { return rightX; }
@@ -219,10 +392,12 @@ public class TalonElevatorIO implements ElevatorIO {
   @Override public double rightInches() { return rightSignals[0].getValueAsDouble(); }
   @Override public double leftInches() { return leftSignals[0].getValueAsDouble(); }
   @Override public double velocityInPerSec() { return rightSignals[3].getValueAsDouble(); }
-  @Override public double profileInches() { return profiling() ? rightX.closedLoopReference() : Double.NaN; }
-  // Phoenix 6 closed-loop error is reference - position; ours is position - reference.
-  @Override public double profileErrorInches() { return profiling() ? -rightX.closedLoopError() : Double.NaN; }
-  @Override public double profileVelocityInPerSec() { return profiling() ? refSlope.getValueAsDouble() : Double.NaN; }
+  @Override public double profileInches() { return profiling() ? leaderX().closedLoopReference() : Double.NaN; }
+  // Phoenix 6 closed-loop error is reference - position; ours is position - reference (the leader's).
+  @Override public double profileErrorInches() { return profiling() ? -leaderX().closedLoopError() : Double.NaN; }
+  @Override public double profileVelocityInPerSec() {
+    return profiling() ? (leftLeads() ? leftRefSlope : rightRefSlope).getValueAsDouble() : Double.NaN;
+  }
   @Override public double rightVolts() { return rightSignals[1].getValueAsDouble(); }
   @Override public double leftVolts() { return leftSignals[1].getValueAsDouble(); }
   @Override public double rightStatorAmps() { return rightSignals[2].getValueAsDouble(); }

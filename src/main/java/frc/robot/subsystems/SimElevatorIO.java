@@ -75,6 +75,7 @@ public class SimElevatorIO implements ElevatorIO {
   private double fwdLimit = Elevator.NOMINAL_TRAVEL_INCHES - Elevator.SOFT_LIMIT_MARGIN_INCHES;
   private boolean revOn = true;
   private boolean fwdOn = true;
+  private Drive drive = Drive.RIGHT_LEADS;
   // --- last outputs, right and left ---
   private final double[] appliedVolts = new double[2];
   private final double[] amps = new double[2];
@@ -157,6 +158,28 @@ public class SimElevatorIO implements ElevatorIO {
   }
 
   @Override
+  public void setDrive(Drive d) {
+    if (d != drive) {
+      mode = Mode.NEUTRAL; // like the Talon: both motors neutral while the roles change
+      drive = d;
+    }
+  }
+
+  @Override
+  public Drive drive() {
+    return drive;
+  }
+
+  private boolean alone() {
+    return drive == Drive.RIGHT_ALONE || drive == Drive.LEFT_ALONE;
+  }
+
+  /** The motor that coasts (drives nothing) when one drives alone, else -1. */
+  private int coasting() {
+    return drive == Drive.RIGHT_ALONE ? LEFT : drive == Drive.LEFT_ALONE ? RIGHT : -1;
+  }
+
+  @Override
   public void moveTo(double inches) {
     if (mode != Mode.PROFILE) {
       // Like the Talon: the profile starts from where the carriage is and how fast it moves.
@@ -201,10 +224,11 @@ public class SimElevatorIO implements ElevatorIO {
       ref = profile.calculate(dt, ref, new TrapezoidProfile.State(goalIn, 0));
       refAccel = (ref.velocity - oldVel) / dt;
       Gains g = gains;
-      loopVolts = g.kG()
-          + g.kS() * Math.signum(ref.velocity)
+      double ff = alone() ? ALONE_FEEDFORWARD_SCALE : 1.0; // one motor does the pair's work
+      loopVolts = ff * g.kG()
+          + ff * g.kS() * Math.signum(ref.velocity)
           + g.kV() * ref.velocity
-          + g.kA() * refAccel
+          + ff * g.kA() * refAccel
           + g.kP() * (ref.position - readInches())
           + g.kD() * (ref.velocity - velInPerSec);
     }
@@ -223,6 +247,12 @@ public class SimElevatorIO implements ElevatorIO {
     v = MathUtil.clamp(v, -peakVolts, peakVolts);
     // Both motors get the leader's volts (the left follows); each draws its own current.
     for (int k = 0; k < 2; k++) {
+      if (k == coasting()) {
+        // Coasting: no current, the terminals just show the back-EMF.
+        appliedVolts[k] = 0;
+        amps[k] = 0;
+        continue;
+      }
       // Motor current, limited like the stator limit (the Talon cuts the voltage to hold it).
       double omega = velInPerSec * radPerIn[k];
       double i = (v - omega * emfVoltsPerRadPerSec) / MOTOR.rOhms;

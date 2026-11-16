@@ -134,6 +134,15 @@ public class Elevator extends SubsystemBase {
   double rightInches;
   double leftInches;
   double sideDiffInches;
+  /** Right minus left for the same instant (latency-compensated): backlash shows at reversals. */
+  double alignedSideDiffInches;
+  /** Which motor leads: RIGHT_LEADS normally; the others only in isolation routines. */
+  String drive = "RIGHT_LEADS";
+  /** Active and sticky faults by CTRE's names, comma-separated. */
+  String rightFaults = "";
+  String leftFaults = "";
+  String rightStickyFaults = "";
+  String leftStickyFaults = "";
   double velocityInPerSec;
   double profileInches;
   double profileVelocityInPerSec;
@@ -228,6 +237,9 @@ public class Elevator extends SubsystemBase {
             "range", this::autoRange,
             "moves", this::standardMoves,
             "fulltravel", this::fullTravelMoves,
+            "soloright", () -> fullTravelWith(ElevatorIO.Drive.RIGHT_ALONE, "ElevatorSoloRight"),
+            "sololeft", () -> fullTravelWith(ElevatorIO.Drive.LEFT_ALONE, "ElevatorSoloLeft"),
+            "leftleads", () -> fullTravelWith(ElevatorIO.Drive.LEFT_LEADS, "ElevatorLeftLeads"),
             "quasistatic", this::quasistatic,
             "dynamic", this::dynamic,
             "dance", this::dance,
@@ -385,6 +397,7 @@ public class Elevator extends SubsystemBase {
     Command rest =
         startRun(
                 () -> {
+                  io.setDrive(ElevatorIO.Drive.RIGHT_LEADS); // motors off now: back to normal
                   parked = true;
                   parkedPub.set(true);
                   DriverStation.reportWarning(
@@ -427,6 +440,7 @@ public class Elevator extends SubsystemBase {
     return new FunctionalCommand(
             () -> {
               rangeStatus = RangeStatus.RUNNING;
+              io.setDrive(ElevatorIO.Drive.RIGHT_LEADS);
               fault = false;
               faultTimer = 0;
               s.phase = RangePhase.DOWN;
@@ -549,10 +563,26 @@ public class Elevator extends SubsystemBase {
    * #FULL_TRAVEL_HOLD_SECONDS}. Never closer to a stop than {@link #STOP_MARGIN_INCHES}.
    */
   public Command fullTravelMoves() {
-    Timer t = new Timer();
+    return rangeIfNeeded().andThen(fullTravelBody()).withName("ElevatorFullTravel");
+  }
+
+  /**
+   * Isolation test: the full-travel moves with another {@link ElevatorIO.Drive} (one motor alone,
+   * the other coasting; or the left leading). Ranges first if needed (always with the normal
+   * drive), switches with the motors in neutral, and switches back to the right leading when it
+   * ends by any ending (park and a disable do too).
+   */
+  public Command fullTravelWith(ElevatorIO.Drive d, String name) {
     return rangeIfNeeded()
-        .andThen(
-            new FunctionalCommand(
+        .andThen(runOnce(() -> { stop(); io.setDrive(d); }))
+        .andThen(fullTravelBody())
+        .finallyDo(() -> { stop(); io.setDrive(ElevatorIO.Drive.RIGHT_LEADS); })
+        .withName(name);
+  }
+
+  private Command fullTravelBody() {
+    Timer t = new Timer();
+    return new FunctionalCommand(
                 t::restart,
                 () -> {
                   mode = "fulltravel";
@@ -562,8 +592,7 @@ public class Elevator extends SubsystemBase {
                 },
                 interrupted -> moveIndex = -1,
                 () -> t.get() >= FULL_TRAVEL_TARGETS * FULL_TRAVEL_HOLD_SECONDS,
-                this))
-        .withName("ElevatorFullTravel");
+                this);
   }
 
   /**
@@ -650,6 +679,7 @@ public class Elevator extends SubsystemBase {
       fault = false;
       faultTimer = 0;
       stop();
+      io.setDrive(ElevatorIO.Drive.RIGHT_LEADS); // no-op unless an isolation test was cut short
       if (tuningDirty) {
         applyTuning();
       }
@@ -719,6 +749,12 @@ public class Elevator extends SubsystemBase {
     leftInches = io.leftInches();
     positionInches = rightInches; // both encoders read true inches now; the right is the reference
     sideDiffInches = rightInches - leftInches;
+    alignedSideDiffInches = io.alignedSideDiffInches();
+    drive = io.drive().name();
+    rightFaults = io.faultNames(true);
+    leftFaults = io.faultNames(false);
+    rightStickyFaults = io.stickyFaultNames(true);
+    leftStickyFaults = io.stickyFaultNames(false);
     velocityInPerSec = io.velocityInPerSec();
     profileInches = io.profileInches();
     profileVelocityInPerSec = io.profileVelocityInPerSec();
