@@ -5,7 +5,7 @@ import forge_lab as f
 
 # Ramp-per-start test (1c) on one enable. Caps 6 V and 40 A. ONE motor alone, open loop.
 # Each start: the routine ranges if needed, switches drive (configs written, as soloright does), goes to the
-# bottom with Motion Magic, then ramps VoltageOut up at 0.5 V/s (to 5 V or the top guard), brakes, ramps down,
+# bottom with Motion Magic, then ramps VoltageOut up at 8 V/s (to 5 V, 32 in/s or 2 in from the stops), brakes, ramps down,
 # brakes. Right and left alternate, 6 starts each. Scored afterwards from the robot log: volts needed per
 # in/s (kV), the volts at which it starts to move, per start. A jump between starts = the motor changed state.
 # At the end the stand parks with motors off and the script waits for YOUR disable.

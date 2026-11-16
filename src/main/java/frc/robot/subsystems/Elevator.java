@@ -102,7 +102,11 @@ public class Elevator extends SubsystemBase {
   public static final double QUASI_VOLTS_PER_SEC = 0.25;
   public static final double QUASI_MAX_VOLTS = 2.0;
   /** Open-loop ramp per start (one motor alone): faster than quasistatic, higher top. */
-  public static final double RAMP_VOLTS_PER_SEC = 0.5;
+  public static final double RAMP_VOLTS_PER_SEC = 8.0;
+  /** The ramps also end at this speed (in/s), before the carriage runs out of travel. */
+  public static final double RAMP_STOP_IN_PER_SEC = 32.0;
+  /** The ramps end this far from either stop (more than CHAR_GUARD_INCHES: they brake from a higher speed). */
+  public static final double RAMP_GUARD_INCHES = 2.0;
   public static final double RAMP_MAX_VOLTS = 5.0;
   /** Open-loop phases end this far from either stop, then brake. */
   public static final double CHAR_GUARD_INCHES = 1.25;
@@ -622,9 +626,9 @@ public class Elevator extends SubsystemBase {
     return rangeIfNeeded()
         .andThen(runOnce(() -> { stop(); io.setDrive(d); }))
         .andThen(goAndSettle(lowInches() + 0.25))
-        .andThen(rampUntil(+RAMP_VOLTS_PER_SEC, RAMP_MAX_VOLTS, () -> positionInches >= highInches() - CHAR_GUARD_INCHES))
+        .andThen(rampUntil(+RAMP_VOLTS_PER_SEC, RAMP_MAX_VOLTS, () -> positionInches >= highInches() - RAMP_GUARD_INCHES || velocityInPerSec >= RAMP_STOP_IN_PER_SEC))
         .andThen(brakeThenSettle())
-        .andThen(rampUntil(-RAMP_VOLTS_PER_SEC, RAMP_MAX_VOLTS, () -> positionInches <= lowInches() + CHAR_GUARD_INCHES))
+        .andThen(rampUntil(-RAMP_VOLTS_PER_SEC, RAMP_MAX_VOLTS, () -> positionInches <= lowInches() + RAMP_GUARD_INCHES || velocityInPerSec <= -RAMP_STOP_IN_PER_SEC))
         .andThen(brakeThenSettle())
         .finallyDo(() -> { stop(); io.setDrive(ElevatorIO.Drive.RIGHT_LEADS); })
         .withName(name);
