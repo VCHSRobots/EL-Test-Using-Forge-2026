@@ -220,6 +220,8 @@ public class TalonElevatorIO implements ElevatorIO {
   @Override public double leftInches() { return leftSignals[0].getValueAsDouble(); }
   @Override public double velocityInPerSec() { return rightSignals[3].getValueAsDouble(); }
   @Override public double profileInches() { return profiling() ? rightX.closedLoopReference() : Double.NaN; }
+  // Phoenix 6 closed-loop error is reference - position; ours is position - reference.
+  @Override public double profileErrorInches() { return profiling() ? -rightX.closedLoopError() : Double.NaN; }
   @Override public double profileVelocityInPerSec() { return profiling() ? refSlope.getValueAsDouble() : Double.NaN; }
   @Override public double rightVolts() { return rightSignals[1].getValueAsDouble(); }
   @Override public double leftVolts() { return leftSignals[1].getValueAsDouble(); }
