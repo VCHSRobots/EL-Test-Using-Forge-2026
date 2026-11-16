@@ -14,7 +14,8 @@ import frc.robot.hardware.Unit;
  * it faster than real time (the CTRE simulator cannot).
  *
  * <p>Each motor has its own gearing from the {@link Unit} (the stand: right 15T, left 16T pinion,
- * both to 46T), and each "Talon" runs its own loop with its own kV, like {@link TalonElevatorIO}.
+ * both to 46T). Like {@link TalonElevatorIO}, one loop (the right "Talon") computes the volts and
+ * both motors get them (the left follows), each motor's current set by its own back-EMF.
  *
  * <p>The physical constants are the stand's (15 Nov 2026): carriage 3.959 lb by CAD, travel 9.375
  * in. Gravity, friction, back-EMF and moving mass are set from the stand's characterization
@@ -47,8 +48,6 @@ public class SimElevatorIO implements ElevatorIO {
   private final double[] radPerIn = new double[2];
   /** Newtons on the carriage per newton-metre of motor torque, right and left. */
   private final double[] nPerNm = new double[2];
-  /** Each Talon's kV multiplier (the right's is 16/15 on the stand). */
-  private final double[] kvScale = new double[2];
   private final double effectiveKg;
   private final double frictionN;
   private final double gravityN;
@@ -88,8 +87,6 @@ public class SimElevatorIO implements ElevatorIO {
   public SimElevatorIO(Unit unit) {
     radPerIn[RIGHT] = unit.rightRotationsPerInch() * 2 * Math.PI;
     radPerIn[LEFT] = unit.leftRotationsPerInch() * 2 * Math.PI;
-    kvScale[RIGHT] = unit.rightKvScale();
-    kvScale[LEFT] = 1.0;
     // Newtons on the carriage per volt on both motors at stall, and the data sheet's kV.
     double newtonsPerVolt = 0;
     double sheetKv = 0;
@@ -198,34 +195,34 @@ public class SimElevatorIO implements ElevatorIO {
   }
 
   private void step(double dt) {
-    double base = 0; // feedforward volts both Talons share (everything but the kV term)
-    double feedback = 0; // kP/kD volts, the right Talon's (and the left's if LEFT_FEEDBACK)
+    double loopVolts = 0; // the leader's (right Talon's) Motion Magic output; the left follows it
     if (mode == Mode.PROFILE) {
-      // Both Talons start from the same state with the same limits, so one profile stands for both.
       double oldVel = ref.velocity;
       ref = profile.calculate(dt, ref, new TrapezoidProfile.State(goalIn, 0));
       refAccel = (ref.velocity - oldVel) / dt;
       Gains g = gains;
-      base = g.kG()
+      loopVolts = g.kG()
           + g.kS() * Math.signum(ref.velocity)
-          + g.kA() * refAccel;
-      feedback = g.kP() * (ref.position - readInches()) + g.kD() * (ref.velocity - velInPerSec);
+          + g.kV() * ref.velocity
+          + g.kA() * refAccel
+          + g.kP() * (ref.position - readInches())
+          + g.kD() * (ref.velocity - velInPerSec);
     }
     double reading = readInches();
     double drive = 0; // newtons up, both motors
+    // The leader's volts: its soft limits (neutral, brake, in the blocked direction) and peak volts.
+    double v =
+        switch (mode) {
+          case VOLTS -> voltsCmd;
+          case PROFILE -> loopVolts;
+          default -> 0.0; // brake mode: the windings are shorted
+        };
+    if ((fwdOn && reading >= fwdLimit && v > 0) || (revOn && reading <= revLimit && v < 0)) {
+      v = 0.0;
+    }
+    v = MathUtil.clamp(v, -peakVolts, peakVolts);
+    // Both motors get the leader's volts (the left follows); each draws its own current.
     for (int k = 0; k < 2; k++) {
-      double v =
-          switch (mode) {
-            case VOLTS -> voltsCmd;
-            case PROFILE -> base + gains.kV() * kvScale[k] * ref.velocity
-                + (k == RIGHT || Elevator.LEFT_FEEDBACK ? feedback : 0.0);
-            default -> 0.0; // brake mode: the windings are shorted
-          };
-      // Soft limits: the Talon goes neutral (brake) in the blocked direction.
-      if ((fwdOn && reading >= fwdLimit && v > 0) || (revOn && reading <= revLimit && v < 0)) {
-        v = 0.0;
-      }
-      v = MathUtil.clamp(v, -peakVolts, peakVolts);
       // Motor current, limited like the stator limit (the Talon cuts the voltage to hold it).
       double omega = velInPerSec * radPerIn[k];
       double i = (v - omega * emfVoltsPerRadPerSec) / MOTOR.rOhms;

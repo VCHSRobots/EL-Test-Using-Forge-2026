@@ -30,12 +30,4 @@ public record Unit(
   public double leftRotationsPerInch() {
     return (double) SHAFT_GEAR_TEETH / leftPinionTeeth / INCHES_PER_SHAFT_TURN;
   }
-
-  /**
-   * The right motor's velocity feedforward relative to the left's: kV cancels the motor's own
-   * back-EMF, which grows with how fast the motor spins for each in/s of travel.
-   */
-  public double rightKvScale() {
-    return rightRotationsPerInch() / leftRotationsPerInch();
-  }
 }
