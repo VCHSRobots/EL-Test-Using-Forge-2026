@@ -51,6 +51,12 @@ import java.util.function.Function;
 public class TalonElevatorIO implements ElevatorIO {
   private static final double CONFIG_TIMEOUT_S = 0.05;
   private static final double LOG_HZ = 100.0;
+  // A Follower changes its output only when the leader's output signal (MotorVoltage for our
+  // voltage requests, DutyCycle otherwise) arrives, so that signal's rate is the follower's
+  // update rate. At 100 Hz the follower held each value for 10 ms while the leader's loop ran
+  // at 1 kHz, and the two motors split the load (run bd0ca0b8). Send it at 1 kHz on both
+  // Talons, since either may lead.
+  private static final double FOLLOW_HZ = 1000.0;
 
   private final TalonFX right;
   private final TalonFX left;
@@ -99,6 +105,9 @@ public class TalonElevatorIO implements ElevatorIO {
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, leftSignals);
     BaseStatusSignal.setUpdateFrequencyForAll(
         LOG_HZ, rightRefSlope, leftRefSlope, rightControlMode, leftControlMode);
+    BaseStatusSignal.setUpdateFrequencyForAll(
+        FOLLOW_HZ, right.getMotorVoltage(), right.getDutyCycle(),
+        left.getMotorVoltage(), left.getDutyCycle());
     for (List<NamedFault> list : List.of(rightFaults, leftFaults)) {
       for (NamedFault f : list) {
         BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, f.now(), f.sticky());
