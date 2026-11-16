@@ -17,7 +17,11 @@ import frc.robot.hardware.Unit;
  * both to 46T), and each "Talon" runs its own loop with its own kV, like {@link TalonElevatorIO}.
  *
  * <p>The physical constants are the stand's (15 Nov 2026): carriage 3.959 lb by CAD, travel 9.375
- * in. The friction, chain mass and rotor inertia are estimates, to be replaced by measured values.
+ * in. Gravity, friction, back-EMF and moving mass are set from the stand's characterization
+ * (EL29, run cf3877f1, both motors at the same open-loop volts): kS 0.122 V, kG 0.162 V, kV 0.0643
+ * V/(in/s), kA 0.0010 V/(in/s^2). Measured against the Kraken X44 data sheet and the CAD weight,
+ * the stand needs 14% more volts to hold against gravity, 9% fewer volts per in/s, and 1.6x the
+ * estimated moving mass (gears, shaft and sprockets add inertia).
  */
 public class SimElevatorIO implements ElevatorIO {
   private static final double DT = 0.02;
@@ -27,12 +31,14 @@ public class SimElevatorIO implements ElevatorIO {
 
   /** Carriage, 3.959 lb by CAD (without the chains). Gravity acts on this. */
   public static final double CARRIAGE_KG = 3.959 * 0.45359;
-  /** The two #25 chain loops move with the carriage but balance under gravity (estimate). */
-  public static final double CHAIN_KG = 0.28;
-  /** One Kraken X44 rotor's inertia (ESTIMATE; the characterization's kA will tell). */
-  public static final double ROTOR_KG_M2 = 1.5e-5;
-  /** Coulomb friction, expressed as the volts per motor that overcome it (EL21 suggests ~0.13 V). */
+  /** Coulomb friction, as the volts on both motors that overcome it (kS measured on EL29). */
   public static final double FRICTION_VOLTS = 0.12;
+  /** Volts on both motors that hold the carriage against gravity (kG measured on EL29). */
+  public static final double GRAVITY_VOLTS = 0.162;
+  /** Volts on both motors per in/s of carriage speed (kV measured on EL29, same volts on both). */
+  public static final double MEASURED_KV = 0.0643;
+  /** Volts on both motors per in/s^2 (kA measured on EL29; rough, from 1 V steps). */
+  public static final double MEASURED_KA = 0.0010;
 
   private static final DCMotor MOTOR = DCMotor.getKrakenX44(1);
   private static final int RIGHT = 0;
@@ -45,6 +51,9 @@ public class SimElevatorIO implements ElevatorIO {
   private final double[] kvScale = new double[2];
   private final double effectiveKg;
   private final double frictionN;
+  private final double gravityN;
+  /** Back-EMF per rad/s, per motor: the data sheet's, scaled so the sim's kV is the measured one. */
+  private final double emfVoltsPerRadPerSec;
 
   private enum Mode { NEUTRAL, VOLTS, PROFILE }
 
@@ -81,15 +90,20 @@ public class SimElevatorIO implements ElevatorIO {
     radPerIn[LEFT] = unit.leftRotationsPerInch() * 2 * Math.PI;
     kvScale[RIGHT] = unit.rightKvScale();
     kvScale[LEFT] = 1.0;
-    double inertia = 0;
-    double friction = 0;
+    // Newtons on the carriage per volt on both motors at stall, and the data sheet's kV.
+    double newtonsPerVolt = 0;
+    double sheetKv = 0;
     for (int k = 0; k < 2; k++) {
       nPerNm[k] = radPerIn[k] / M_PER_IN;
-      inertia += ROTOR_KG_M2 * nPerNm[k] * nPerNm[k];
-      friction += MOTOR.KtNMPerAmp * (FRICTION_VOLTS / MOTOR.rOhms) * nPerNm[k];
+      double n = MOTOR.KtNMPerAmp / MOTOR.rOhms * nPerNm[k];
+      newtonsPerVolt += n;
+      sheetKv += n * radPerIn[k] / MOTOR.KvRadPerSecPerVolt;
     }
-    effectiveKg = CARRIAGE_KG + CHAIN_KG + inertia;
-    frictionN = friction;
+    sheetKv /= newtonsPerVolt;
+    emfVoltsPerRadPerSec = MEASURED_KV / sheetKv / MOTOR.KvRadPerSecPerVolt;
+    frictionN = FRICTION_VOLTS * newtonsPerVolt;
+    gravityN = GRAVITY_VOLTS * newtonsPerVolt;
+    effectiveKg = MEASURED_KA * newtonsPerVolt / M_PER_IN;
   }
 
   private static TrapezoidProfile profileOf(Gains g) {
@@ -214,14 +228,14 @@ public class SimElevatorIO implements ElevatorIO {
       v = MathUtil.clamp(v, -peakVolts, peakVolts);
       // Motor current, limited like the stator limit (the Talon cuts the voltage to hold it).
       double omega = velInPerSec * radPerIn[k];
-      double i = (v - omega / MOTOR.KvRadPerSecPerVolt) / MOTOR.rOhms;
+      double i = (v - omega * emfVoltsPerRadPerSec) / MOTOR.rOhms;
       i = MathUtil.clamp(i, -statorAmps, statorAmps);
-      appliedVolts[k] = i * MOTOR.rOhms + omega / MOTOR.KvRadPerSecPerVolt;
+      appliedVolts[k] = i * MOTOR.rOhms + omega * emfVoltsPerRadPerSec;
       amps[k] = i;
       drive += MOTOR.KtNMPerAmp * i * nPerNm[k];
     }
 
-    double net = drive - CARRIAGE_KG * G;
+    double net = drive - gravityN;
     if (Math.abs(velInPerSec) < 1e-3) {
       // Static friction holds it unless the net force beats it.
       if (Math.abs(net) <= frictionN) {
@@ -237,7 +251,7 @@ public class SimElevatorIO implements ElevatorIO {
     double newVel = velInPerSec + accelInPerSec2 * dt;
     // Kinetic friction never reverses the motion within a step.
     if (velInPerSec != 0 && Math.signum(newVel) != Math.signum(velInPerSec)
-        && Math.abs(drive - CARRIAGE_KG * G) <= frictionN) {
+        && Math.abs(drive - gravityN) <= frictionN) {
       newVel = 0;
     }
     velInPerSec = newVel;
