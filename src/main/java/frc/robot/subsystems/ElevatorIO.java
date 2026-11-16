@@ -57,6 +57,17 @@ public interface ElevatorIO {
   /** The profile's current position (Motion Magic reference), inches; NaN when not profiling. */
   double profileInches();
 
+  /**
+   * Position minus the profile's position, inches; NaN when not profiling. The default subtracts
+   * the two readings; the Talon overrides it with its own closed-loop error, taken in one instant,
+   * because its position and reference arrive in different CAN frames a few ms apart (at 25 in/s
+   * that skew alone read as 0.2 in of error).
+   */
+  default double profileErrorInches() {
+    double ref = profileInches();
+    return Double.isNaN(ref) ? Double.NaN : rightInches() - ref;
+  }
+
   /** The profile's current velocity, in/s; NaN when not profiling. */
   double profileVelocityInPerSec();
 

@@ -625,7 +625,8 @@ public class Elevator extends SubsystemBase {
       }
     } else {
       // Lag fault: judged only against a running profile.
-      profileErrorInches = Double.isNaN(profileInches) ? 0.0 : positionInches - profileInches;
+      double err = io.profileErrorInches();
+      profileErrorInches = Double.isNaN(err) ? 0.0 : err;
       faultTimer =
           closedLoop && Math.abs(profileErrorInches) > FAULT_ERROR_INCHES ? faultTimer + 0.02 : 0.0;
       if (faultTimer >= FAULT_SECONDS && !fault) {
