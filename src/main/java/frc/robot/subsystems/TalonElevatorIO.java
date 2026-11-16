@@ -164,6 +164,8 @@ public class TalonElevatorIO implements ElevatorIO {
     f.add(fault(m, "StatorCurrLimit", TalonFX::getFault_StatorCurrLimit, TalonFX::getStickyFault_StatorCurrLimit));
     f.add(fault(m, "SupplyCurrLimit", TalonFX::getFault_SupplyCurrLimit, TalonFX::getStickyFault_SupplyCurrLimit));
     f.add(fault(m, "UsingFusedCANcoderWhileUnlicensed", TalonFX::getFault_UsingFusedCANcoderWhileUnlicensed, TalonFX::getStickyFault_UsingFusedCANcoderWhileUnlicensed));
+    f.add(fault(m, "RotorFault1", TalonFX::getFault_RotorFault1, TalonFX::getStickyFault_RotorFault1));
+    f.add(fault(m, "RotorFault2", TalonFX::getFault_RotorFault2, TalonFX::getStickyFault_RotorFault2));
     f.add(fault(m, "StaticBrakeDisabled", TalonFX::getFault_StaticBrakeDisabled, TalonFX::getStickyFault_StaticBrakeDisabled));
     return f;
   }
@@ -285,6 +287,24 @@ public class TalonElevatorIO implements ElevatorIO {
     other().getConfigurator().apply(new SoftwareLimitSwitchConfigs(), CONFIG_TIMEOUT_S);
     configureLeader(leader());
     // So the sticky faults of each test belong to that test.
+    right.clearStickyFaults();
+    left.clearStickyFaults();
+  }
+
+  @Override
+  public void switchRequestOnly(Drive d) {
+    if (d == drive) return;
+    right.setControl(neutral);
+    left.setControl(neutral);
+    drive = d; // requests only: no config writes, no sticky clear
+  }
+
+  @Override
+  public void rewriteConfigs() {
+    right.setControl(neutral);
+    left.setControl(neutral);
+    other().getConfigurator().apply(new SoftwareLimitSwitchConfigs(), CONFIG_TIMEOUT_S);
+    configureLeader(leader());
     right.clearStickyFaults();
     left.clearStickyFaults();
   }

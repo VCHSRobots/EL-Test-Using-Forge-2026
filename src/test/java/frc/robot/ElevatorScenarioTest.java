@@ -405,9 +405,10 @@ class ElevatorScenarioTest {
       e.tuning().set("CruiseInPerSec", 30);
       e.tuning().set("AccelInPerSec2", 200);
       var routine = NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine");
-      String[] names = {"soloright", "sololeft", "leftleads"};
+      String[] names = {"soloright", "sololeft", "leftleads", "fulltravel_noconfig", "fulltravel_reconfig", "fulltravel_noconfig_left", "fulltravel_reconfig_left"};
       ElevatorIO.Drive[] drives = {
-        ElevatorIO.Drive.RIGHT_ALONE, ElevatorIO.Drive.LEFT_ALONE, ElevatorIO.Drive.LEFT_LEADS
+        ElevatorIO.Drive.RIGHT_ALONE, ElevatorIO.Drive.LEFT_ALONE, ElevatorIO.Drive.LEFT_LEADS,
+        ElevatorIO.Drive.RIGHT_ALONE, ElevatorIO.Drive.RIGHT_ALONE, ElevatorIO.Drive.LEFT_ALONE, ElevatorIO.Drive.LEFT_ALONE
       };
       for (int n = 0; n < names.length; n++) {
         routine.setString("park");

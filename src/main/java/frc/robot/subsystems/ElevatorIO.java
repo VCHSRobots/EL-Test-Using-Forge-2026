@@ -24,6 +24,20 @@ public interface ElevatorIO {
    */
   default void setDrive(Drive drive) {}
 
+  /**
+   * Trigger test: switches which motor leads (the requests each motor gets) with NO config
+   * writes and no sticky-fault clear. The configs stay as the last setDrive/applyGains left them.
+   */
+  default void switchRequestOnly(Drive drive) {
+    setDrive(drive);
+  }
+
+  /**
+   * Trigger test: rewrites the leader's and the other motor's configs and clears sticky faults,
+   * exactly as setDrive does, but keeps the current drive and its requests. Motors in neutral.
+   */
+  default void rewriteConfigs() {}
+
   default Drive drive() {
     return Drive.RIGHT_LEADS;
   }

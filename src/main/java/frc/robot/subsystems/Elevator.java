@@ -233,17 +233,22 @@ public class Elevator extends SubsystemBase {
     parkedPub.set(false);
     routinePub.set("");
     routines =
-        Map.of(
-            "range", this::autoRange,
-            "moves", this::standardMoves,
-            "fulltravel", this::fullTravelMoves,
-            "soloright", () -> fullTravelWith(ElevatorIO.Drive.RIGHT_ALONE, "ElevatorSoloRight"),
-            "sololeft", () -> fullTravelWith(ElevatorIO.Drive.LEFT_ALONE, "ElevatorSoloLeft"),
-            "leftleads", () -> fullTravelWith(ElevatorIO.Drive.LEFT_LEADS, "ElevatorLeftLeads"),
-            "quasistatic", this::quasistatic,
-            "dynamic", this::dynamic,
-            "dance", this::dance,
-            "park", this::park);
+        Map.ofEntries(
+            Map.entry("range", (Supplier<Command>) this::autoRange),
+            Map.entry("moves", (Supplier<Command>) this::standardMoves),
+            Map.entry("fulltravel", (Supplier<Command>) this::fullTravelMoves),
+            Map.entry("soloright", (Supplier<Command>) () -> fullTravelWith(ElevatorIO.Drive.RIGHT_ALONE, "ElevatorSoloRight")),
+            Map.entry("sololeft", (Supplier<Command>) () -> fullTravelWith(ElevatorIO.Drive.LEFT_ALONE, "ElevatorSoloLeft")),
+            Map.entry("leftleads", (Supplier<Command>) () -> fullTravelWith(ElevatorIO.Drive.LEFT_LEADS, "ElevatorLeftLeads")),
+            // Trigger tests (right or left alone): same requests, configs written or not.
+            Map.entry("fulltravel_noconfig", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.RIGHT_ALONE, false, "ElevatorNoConfigRight")),
+            Map.entry("fulltravel_reconfig", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.RIGHT_ALONE, true, "ElevatorReconfigRight")),
+            Map.entry("fulltravel_noconfig_left", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.LEFT_ALONE, false, "ElevatorNoConfigLeft")),
+            Map.entry("fulltravel_reconfig_left", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.LEFT_ALONE, true, "ElevatorReconfigLeft")),
+            Map.entry("quasistatic", (Supplier<Command>) this::quasistatic),
+            Map.entry("dynamic", (Supplier<Command>) this::dynamic),
+            Map.entry("dance", (Supplier<Command>) this::dance),
+            Map.entry("park", (Supplier<Command>) this::park));
   }
 
   // ---------------------------------------------------------------- queries
@@ -577,6 +582,26 @@ public class Elevator extends SubsystemBase {
         .andThen(runOnce(() -> { stop(); io.setDrive(d); }))
         .andThen(fullTravelBody())
         .finallyDo(() -> { stop(); io.setDrive(ElevatorIO.Drive.RIGHT_LEADS); })
+        .withName(name);
+  }
+
+  /**
+   * Trigger test for the start-to-start change in load (1b): the full-travel moves with one motor
+   * alone, where the start either only switches the control requests ({@code writeConfigs} false)
+   * or also rewrites every config ({@code true}, as soloright does). Ranges first with the normal
+   * drive. The Talons keep whatever configs the last write left (normal gains, so the feed-forward
+   * is not doubled; the position loop makes up the difference). Back to the right leading, requests
+   * only, when it ends.
+   */
+  public Command triggerTest(ElevatorIO.Drive d, boolean writeConfigs, String name) {
+    return rangeIfNeeded()
+        .andThen(runOnce(() -> {
+          stop();
+          io.switchRequestOnly(d);
+          if (writeConfigs) io.rewriteConfigs();
+        }))
+        .andThen(fullTravelBody())
+        .finallyDo(() -> { stop(); io.switchRequestOnly(ElevatorIO.Drive.RIGHT_LEADS); })
         .withName(name);
   }
 
