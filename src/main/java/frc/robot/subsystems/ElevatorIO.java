@@ -149,6 +149,40 @@ public interface ElevatorIO {
     static final Extras ZERO = new Extras(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
   }
 
+  /**
+   * The leader's own breakdown of its closed-loop output, and how old each reading was when this
+   * loop read it (ms since the roboRIO received its CAN frame). All read in one refresh, so a
+   * term that disagrees with the others can be told from a term that is merely older. For
+   * logging only (all zero where an implementation has none).
+   */
+  record LoopTerms(
+      double proportional,
+      double derivative,
+      double feedForward,
+      double output,
+      double error,
+      double reference,
+      double referenceSlope,
+      double position,
+      double motorVolts,
+      double followerVolts,
+      double ageProportionalMs,
+      double ageFeedForwardMs,
+      double ageOutputMs,
+      double ageErrorMs,
+      double ageReferenceMs,
+      double ageReferenceSlopeMs,
+      double agePositionMs,
+      double ageMotorVoltsMs,
+      double ageFollowerVoltsMs) {
+    static final LoopTerms ZERO =
+        new LoopTerms(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+
+  default LoopTerms loopTerms() {
+    return LoopTerms.ZERO;
+  }
+
   default Extras rightExtras() {
     return Extras.ZERO;
   }

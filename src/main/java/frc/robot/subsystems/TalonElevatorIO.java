@@ -2,6 +2,7 @@ package frc.robot.subsystems;
 
 import com.ctre.phoenix6.BaseStatusSignal;
 import com.ctre.phoenix6.StatusSignal;
+import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
 import com.ctre.phoenix6.configs.MotionMagicConfigs;
 import com.ctre.phoenix6.configs.Slot0Configs;
@@ -72,6 +73,11 @@ public class TalonElevatorIO implements ElevatorIO {
   private final StatusSignal<Double> leftRefSlope;
   private final StatusSignal<ControlModeValue> rightControlMode;
   private final StatusSignal<ControlModeValue> leftControlMode;
+  // Each Talon's own breakdown of its closed-loop output: proportional, derivative, feedforward.
+  private final StatusSignal<?>[] rightTerms;
+  private final StatusSignal<?>[] leftTerms;
+  // Every signal above, refreshed in one call so all readings belong to the same instant.
+  private final BaseStatusSignal[] everySignal;
   private final List<NamedFault> rightFaults;
   private final List<NamedFault> leftFaults;
   private Drive drive = Drive.RIGHT_LEADS;
@@ -83,6 +89,7 @@ public class TalonElevatorIO implements ElevatorIO {
   private boolean forwardLimitOn = true;
   private Extras rightX = Extras.ZERO;
   private Extras leftX = Extras.ZERO;
+  private LoopTerms loop = LoopTerms.ZERO;
 
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
@@ -99,12 +106,16 @@ public class TalonElevatorIO implements ElevatorIO {
     leftRefSlope = left.getClosedLoopReferenceSlope();
     rightControlMode = right.getControlMode();
     leftControlMode = left.getControlMode();
+    rightTerms = termsOf(right);
+    leftTerms = termsOf(left);
     rightFaults = faultsOf(right);
     leftFaults = faultsOf(left);
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, rightSignals);
     BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, leftSignals);
     BaseStatusSignal.setUpdateFrequencyForAll(
         LOG_HZ, rightRefSlope, leftRefSlope, rightControlMode, leftControlMode);
+    BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, rightTerms);
+    BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, leftTerms);
     BaseStatusSignal.setUpdateFrequencyForAll(
         FOLLOW_HZ, right.getMotorVoltage(), right.getDutyCycle(),
         left.getMotorVoltage(), left.getDutyCycle());
@@ -113,6 +124,19 @@ public class TalonElevatorIO implements ElevatorIO {
         BaseStatusSignal.setUpdateFrequencyForAll(LOG_HZ, f.now(), f.sticky());
       }
     }
+    List<BaseStatusSignal> all = new ArrayList<>();
+    all.addAll(List.of(rightSignals));
+    all.addAll(List.of(leftSignals));
+    all.addAll(List.of(rightTerms));
+    all.addAll(List.of(leftTerms));
+    all.addAll(List.of(rightRefSlope, leftRefSlope, rightControlMode, leftControlMode));
+    for (List<NamedFault> list : List.of(rightFaults, leftFaults)) {
+      for (NamedFault f : list) {
+        all.add(f.now());
+        all.add(f.sticky());
+      }
+    }
+    everySignal = all.toArray(new BaseStatusSignal[0]);
     right.clearStickyFaults();
     left.clearStickyFaults();
     right.optimizeBusUtilization();
@@ -128,6 +152,19 @@ public class TalonElevatorIO implements ElevatorIO {
       m.getSupplyVoltage(), m.getClosedLoopError(), m.getClosedLoopReference(), // 9-11
       m.getClosedLoopOutput(), m.getFaultField(), m.getStickyFaultField() // 12-14
     };
+  }
+
+  /** Proportional, derivative and feedforward parts of the closed-loop output, volts. */
+  private static StatusSignal<?>[] termsOf(TalonFX m) {
+    return new StatusSignal<?>[] {
+      m.getClosedLoopProportionalOutput(), m.getClosedLoopDerivativeOutput(),
+      m.getClosedLoopFeedForward()
+    };
+  }
+
+  /** How old a reading is now: ms since the roboRIO received the frame that carried it. */
+  private static double ageMs(BaseStatusSignal s, double nowSeconds) {
+    return (nowSeconds - s.getAllTimestamps().getSystemTimestamp().getTime()) * 1000.0;
   }
 
   private static Extras extrasOf(StatusSignal<?>[] s) {
@@ -375,16 +412,23 @@ public class TalonElevatorIO implements ElevatorIO {
 
   @Override
   public void update() {
-    BaseStatusSignal.refreshAll(rightSignals);
-    BaseStatusSignal.refreshAll(leftSignals);
-    BaseStatusSignal.refreshAll(rightRefSlope, leftRefSlope, rightControlMode, leftControlMode);
-    for (List<NamedFault> list : List.of(rightFaults, leftFaults)) {
-      for (NamedFault f : list) {
-        BaseStatusSignal.refreshAll(f.now(), f.sticky());
-      }
-    }
+    BaseStatusSignal.refreshAll(everySignal); // one call: every reading from the same instant
+    double now = Utils.getCurrentTimeSeconds();
     rightX = extrasOf(rightSignals);
     leftX = extrasOf(leftSignals);
+    boolean l = leftLeads();
+    StatusSignal<?>[] s = l ? leftSignals : rightSignals;
+    StatusSignal<?>[] t = l ? leftTerms : rightTerms;
+    StatusSignal<?> slope = l ? leftRefSlope : rightRefSlope;
+    StatusSignal<?> followerVolts = (l ? rightSignals : leftSignals)[1];
+    loop = new LoopTerms(
+        t[0].getValueAsDouble(), t[1].getValueAsDouble(), t[2].getValueAsDouble(),
+        s[12].getValueAsDouble(), s[10].getValueAsDouble(), s[11].getValueAsDouble(),
+        slope.getValueAsDouble(), s[0].getValueAsDouble(), s[1].getValueAsDouble(),
+        followerVolts.getValueAsDouble(),
+        ageMs(t[0], now), ageMs(t[2], now), ageMs(s[12], now), ageMs(s[10], now),
+        ageMs(s[11], now), ageMs(slope, now), ageMs(s[0], now), ageMs(s[1], now),
+        ageMs(followerVolts, now));
   }
 
   private boolean leftLeads() {
@@ -416,6 +460,7 @@ public class TalonElevatorIO implements ElevatorIO {
     return names(rightMotor ? rightFaults : leftFaults, true);
   }
 
+  @Override public LoopTerms loopTerms() { return loop; }
   @Override public Extras rightExtras() { return rightX; }
   @Override public Extras leftExtras() { return leftX; }
   @Override public double rightInches() { return rightSignals[0].getValueAsDouble(); }
