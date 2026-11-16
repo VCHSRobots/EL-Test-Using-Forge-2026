@@ -10,6 +10,7 @@ import edu.wpi.first.wpilibj2.command.button.JoystickButton;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
 import frc.robot.hardware.Unit;
 import frc.robot.subsystems.Elevator;
+import frc.robot.subsystems.PowerLog;
 import frc.robot.subsystems.SimElevatorIO;
 import frc.robot.subsystems.TalonElevatorIO;
 
@@ -19,10 +20,13 @@ public class RobotContainer {
   final Unit unit;
   /** Null on a unit with no hardware map, so no motor is ever built for an unknown robot. */
   final Elevator elevator;
+  /** The PDH's currents and voltage, logged every loop; null on an unknown unit. */
+  final PowerLog power;
 
   public RobotContainer(Unit unit) {
     this.unit = unit;
     if (unit.known()) {
+      power = new PowerLog();
       elevator = new Elevator(RobotBase.isSimulation() ? new SimElevatorIO(unit) : new TalonElevatorIO(unit));
       // Teleop: the stick on port 0, axis 1 sets the height over the measured range.
       elevator.setDefaultCommand(elevator.followStick());
@@ -36,6 +40,7 @@ public class RobotContainer {
       new JoystickButton(stick, 2).toggleOnTrue(elevator.dance());
     } else {
       elevator = null;
+      power = null;
       DriverStation.reportWarning("Unknown unit " + unit.serial() + ": elevator not built", false);
     }
   }
