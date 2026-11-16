@@ -101,6 +101,9 @@ public class Elevator extends SubsystemBase {
   /** Quasistatic ramp rate and ceiling. */
   public static final double QUASI_VOLTS_PER_SEC = 0.25;
   public static final double QUASI_MAX_VOLTS = 2.0;
+  /** Open-loop ramp per start (one motor alone): faster than quasistatic, higher top. */
+  public static final double RAMP_VOLTS_PER_SEC = 0.5;
+  public static final double RAMP_MAX_VOLTS = 5.0;
   /** Open-loop phases end this far from either stop, then brake. */
   public static final double CHAR_GUARD_INCHES = 1.25;
   /** Park: the move to the bottom of the range gives up waiting to settle after this long. */
@@ -245,6 +248,9 @@ public class Elevator extends SubsystemBase {
             Map.entry("fulltravel_reconfig", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.RIGHT_ALONE, true, "ElevatorReconfigRight")),
             Map.entry("fulltravel_noconfig_left", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.LEFT_ALONE, false, "ElevatorNoConfigLeft")),
             Map.entry("fulltravel_reconfig_left", (Supplier<Command>) () -> triggerTest(ElevatorIO.Drive.LEFT_ALONE, true, "ElevatorReconfigLeft")),
+            // Open-loop ramp per start (1c): one motor alone, VoltageOut ramp up then down, no Motion Magic in the ramps.
+            Map.entry("rampsolo", (Supplier<Command>) () -> rampTest(ElevatorIO.Drive.RIGHT_ALONE, "ElevatorRampRight")),
+            Map.entry("rampsolo_left", (Supplier<Command>) () -> rampTest(ElevatorIO.Drive.LEFT_ALONE, "ElevatorRampLeft")),
             Map.entry("quasistatic", (Supplier<Command>) this::quasistatic),
             Map.entry("dynamic", (Supplier<Command>) this::dynamic),
             Map.entry("dance", (Supplier<Command>) this::dance),
@@ -605,6 +611,25 @@ public class Elevator extends SubsystemBase {
         .withName(name);
   }
 
+  /**
+   * Open-loop ramp per start (1c): like the solo starts (ranges, switches drive with configs
+   * written, goes to the bottom with Motion Magic), then one motor alone ramps VoltageOut up at
+   * {@link #RAMP_VOLTS_PER_SEC} to {@link #RAMP_MAX_VOLTS} (or until {@link #CHAR_GUARD_INCHES}
+   * below the top), brakes, then ramps down the same way. The log's volts and velocity give kS,
+   * kV and the breakaway volts for that start. Back to the right leading when it ends.
+   */
+  public Command rampTest(ElevatorIO.Drive d, String name) {
+    return rangeIfNeeded()
+        .andThen(runOnce(() -> { stop(); io.setDrive(d); }))
+        .andThen(goAndSettle(lowInches() + 0.25))
+        .andThen(rampUntil(+RAMP_VOLTS_PER_SEC, RAMP_MAX_VOLTS, () -> positionInches >= highInches() - CHAR_GUARD_INCHES))
+        .andThen(brakeThenSettle())
+        .andThen(rampUntil(-RAMP_VOLTS_PER_SEC, RAMP_MAX_VOLTS, () -> positionInches <= lowInches() + CHAR_GUARD_INCHES))
+        .andThen(brakeThenSettle())
+        .finallyDo(() -> { stop(); io.setDrive(ElevatorIO.Drive.RIGHT_LEADS); })
+        .withName(name);
+  }
+
   private Command fullTravelBody() {
     Timer t = new Timer();
     return new FunctionalCommand(
@@ -657,15 +682,19 @@ public class Elevator extends SubsystemBase {
   }
 
   private Command rampUntil(double voltsPerSec, java.util.function.BooleanSupplier done) {
+    return rampUntil(voltsPerSec, QUASI_MAX_VOLTS, done);
+  }
+
+  private Command rampUntil(double voltsPerSec, double maxVolts, java.util.function.BooleanSupplier done) {
     Timer t = new Timer();
     return new FunctionalCommand(
         t::restart,
         () -> {
           mode = "quasistatic";
-          volts(MathUtil.clamp(voltsPerSec * t.get(), -QUASI_MAX_VOLTS, QUASI_MAX_VOLTS));
+          volts(MathUtil.clamp(voltsPerSec * t.get(), -maxVolts, maxVolts));
         },
         interrupted -> stop(),
-        () -> done.getAsBoolean() || Math.abs(voltsPerSec * t.get()) >= QUASI_MAX_VOLTS,
+        () -> done.getAsBoolean() || Math.abs(voltsPerSec * t.get()) >= maxVolts,
         this);
   }
 
