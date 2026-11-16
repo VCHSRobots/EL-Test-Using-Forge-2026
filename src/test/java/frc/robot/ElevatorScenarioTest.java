@@ -266,10 +266,13 @@ class ElevatorScenarioTest {
       System.out.printf(
           "fast move: peak %.2f A, worst right-left gap %.3f A, opposed %d of 50%n", peak, worstGap, opposed);
       // Only the right corrects position (LEFT_FEEDBACK false), so the gap is the feedforward's
-      // error, which the right makes up; it shrinks once kS/kG/kV/kA are measured. The two must
-      // never pull against each other, and the hold must match (both on kG plus a tiny P).
+      // error, which the right makes up. With kS/kG/kV/kA measured (EL29) the gap was 4.5 A with
+      // the predicted gains and is now under 1 A. The two must never pull against each other.
+      // Holding, static friction can leave a few thousandths of an inch of error, so the right's
+      // P term carries up to about 1 A more than the left (0.8 A here: 0.035 V at kP 8).
       assertEquals(0, opposed);
-      assertEquals(io.rightStatorAmps(), io.leftStatorAmps(), 0.5);
+      assertTrue(worstGap < 1.5, "worst gap " + worstGap);
+      assertEquals(io.rightStatorAmps(), io.leftStatorAmps(), 1.0);
       assertEquals(e.highInches(), io.physicalInches(), 0.03);
     }
   }

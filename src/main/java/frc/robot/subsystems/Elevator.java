@@ -46,12 +46,14 @@ public class Elevator extends SubsystemBase {
   /** The Talons' soft limits sit this far inside the stops. */
   public static final double SOFT_LIMIT_MARGIN_INCHES = 0.10;
 
-  // --- Defaults (predicted from the motor data and EL21; to be measured, see NOTES.md) ---
-  // kV is for the 16T (left) motor; the right Talon gets kV x 16/15 (Unit.rightKvScale).
+  // --- Defaults: kS, kG, kV, kA measured on EL29 (run cf3877f1, see NOTES.md) ---
+  // kV is for the 16T (left) motor; the right Talon gets kV x 16/15 (Unit.rightKvScale). The fit
+  // gave 0.0643 V/(in/s) with the same volts on both motors; per motor that is 0.0621 on the left
+  // and 0.0663 on the right.
   // kP and kD act on the RIGHT motor only (see LEFT_FEEDBACK), so they are twice the old
   // per-motor 4 V/in and 0.05 V/(in/s): the same total correction as when both motors had them.
   public static final ElevatorIO.Gains DEFAULT_GAINS =
-      new ElevatorIO.Gains(0.10, 0.15, 0.069, 0.0006, 8.0, 0.10, 10.0, 60.0, 0.0);
+      new ElevatorIO.Gains(0.12, 0.16, 0.0621, 0.0010, 8.0, 0.10, 10.0, 60.0, 0.0);
   /**
    * Whether the left Talon runs kP/kD too. False: the left runs only the feedforward (kS, kG, kV,
    * kA) of the same Motion Magic move, and the right alone corrects position. With both correcting
