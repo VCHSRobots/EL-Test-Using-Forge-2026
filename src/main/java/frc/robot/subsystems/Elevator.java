@@ -27,7 +27,7 @@ import java.util.function.Supplier;
  * <p>Moves are Motion Magic profiles run inside the right Talon at 1 kHz, with gravity (kG),
  * friction (kS), velocity (kV) and acceleration (kA) feedforward and a PD loop; the left Talon
  * follows it (the same volts). Gains, profile limits and output caps are live-tunable under /Elevator/Tuning/ (applied
- * while disabled). Commanded heights always stay {@link #STOP_MARGIN_INCHES} inside the measured
+ * while disabled, or while parked with the motors off). Commanded heights always stay {@link #STOP_MARGIN_INCHES} inside the measured
  * travel, and the Talons' soft limits sit just inside the stops.
  *
  * <p>Safety: /Forge/Abort true means zero output until it is cleared; a lag of more than
@@ -112,6 +112,9 @@ public class Elevator extends SubsystemBase {
   private final DoublePublisher targetPub;
   private final DoublePublisher travelPub;
   private final BooleanPublisher parkedPub;
+  private final DoublePublisher profileErrorPub;
+  private final DoublePublisher kPInUsePub;
+  private final DoublePublisher kDInUsePub;
   private final ElevatorView view = new ElevatorView(NOMINAL_TRAVEL_INCHES);
   private final Map<String, Supplier<Command>> routines;
   private String lastRoutineRequest = "";
@@ -209,6 +212,9 @@ public class Elevator extends SubsystemBase {
     targetPub = status.getDoubleTopic("TargetInches").publish();
     travelPub = status.getDoubleTopic("TravelInches").publish();
     parkedPub = status.getBooleanTopic("Parked").publish();
+    profileErrorPub = status.getDoubleTopic("ProfileErrorInches").publish();
+    kPInUsePub = status.getDoubleTopic("kPInUse").publish();
+    kDInUsePub = status.getDoubleTopic("kDInUse").publish();
     parkedPub.set(false);
     routinePub.set("");
     routines =
@@ -231,6 +237,11 @@ public class Elevator extends SubsystemBase {
   public double bottomFoundInches() { return bottomFoundInches; }
   public boolean faulted() { return fault; }
   public boolean isParked() { return parked; }
+
+  /** kP and kD in use (the last tuning written to the Talons). */
+  public double kPInUse() { return kP; }
+
+  public double kDInUse() { return kD; }
   public boolean aborted() { return aborted; }
   public String mode() { return mode; }
   public Tuning tuning() { return tuning; }
@@ -624,11 +635,19 @@ public class Elevator extends SubsystemBase {
       if (fault || aborted) {
         io.neutral();
       }
+      // Parked = motors off, so new tuning can be written while enabled (a sweep changes kP/kD
+      // between sets without a disable). Never while anything else runs.
+      if (tuningDirty && parked) {
+        applyTuning();
+      }
       handleRoutineRequest();
     }
     positionPub.set(positionInches);
     targetPub.set(targetInches);
     travelPub.set(travelInches);
+    profileErrorPub.set(profileErrorInches);
+    kPInUsePub.set(kP);
+    kDInUsePub.set(kD);
     view.update(positionInches);
     routinePub.set(getCurrentCommand() == null ? "" : getCurrentCommand().getName());
   }

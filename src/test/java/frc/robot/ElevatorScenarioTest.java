@@ -334,4 +334,31 @@ class ElevatorScenarioTest {
       assertEquals(0.0, io.physicalInches(), 1e-9);
     }
   }
+
+  @Test
+  void newGainsApplyWhileParkedButNotWhileMoving() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      // Moving: a new kP waits.
+      e.goTo(e.lowInches()).schedule();
+      sc.run(0.1);
+      e.tuning().set("kP", 20);
+      sc.run(0.2);
+      assertEquals(Elevator.DEFAULT_GAINS.kP(), e.kPInUse(), 1e-9);
+      // Parked (motors off), still enabled: it is written.
+      e.park().schedule();
+      sc.run(3.0);
+      assertTrue(e.isParked());
+      assertEquals(20, e.kPInUse(), 1e-9);
+      e.tuning().set("kD", 0.3);
+      sc.run(0.1);
+      assertEquals(0.3, e.kDInUse(), 1e-9);
+      // And the next routine runs with them, still accurately.
+      e.standardMoves().schedule();
+      sc.run(6.5);
+      assertEquals(1.0, e.positionInches(), 0.03);
+      assertFalse(e.faulted());
+    }
+  }
 }
