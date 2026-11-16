@@ -447,6 +447,41 @@ class ElevatorScenarioTest {
   }
 
   @Test
+  void theRampRoutinesRampOneMotorAloneInsideTheStopsAndGoBackToNormal() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.tuning().set("PeakVolts", 6);
+      e.tuning().set("StatorAmps", 40);
+      var routine = NetworkTableInstance.getDefault().getEntry("/Elevator/Control/Routine");
+      String[] names = {"rampsolo", "rampsolo_left"};
+      ElevatorIO.Drive[] drives = {ElevatorIO.Drive.RIGHT_ALONE, ElevatorIO.Drive.LEFT_ALONE};
+      for (int n = 0; n < names.length; n++) {
+        routine.setString("park");
+        sc.run(3.0);
+        routine.setString(names[n]);
+        double lowest = 99, highest = -99, idleAmps = 0;
+        boolean sawDrive = false;
+        for (int i = 0; i < 60 * 50; i++) {
+          sc.run(0.02);
+          if (i > 150) lowest = Math.min(lowest, io.physicalInches()); // the start is at rest on the bottom stop
+          highest = Math.max(highest, io.physicalInches());
+          if (io.drive() == drives[n]) {
+            sawDrive = true;
+            idleAmps = Math.max(idleAmps, Math.abs(drives[n] == ElevatorIO.Drive.RIGHT_ALONE ? io.leftStatorAmps() : io.rightStatorAmps()));
+          }
+        }
+        assertTrue(sawDrive, names[n]);
+        assertEquals(0.0, idleAmps, 1e-9);
+        assertTrue(lowest > 0.05, names[n] + " lowest " + lowest);
+        assertTrue(highest < e.travelInches() - 0.05, names[n] + " highest " + highest);
+        assertEquals(ElevatorIO.Drive.RIGHT_LEADS, io.drive());
+        assertFalse(e.faulted());
+      }
+    }
+  }
+
+  @Test
   void aDisableDuringAnIsolationRoutinePutsTheRightBackInTheLead() {
     try (Scenario sc = Scenario.start()) {
       SimElevatorIO io = new SimElevatorIO();
