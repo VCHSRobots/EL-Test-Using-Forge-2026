@@ -238,7 +238,7 @@ class ElevatorScenarioTest {
   }
 
   @Test
-  void theMotorsNeverPushAgainstEachOtherDespiteDifferentPinions() {
+  void theLeftFollowsTheRightAndTheyShareTheHold() {
     try (Scenario sc = Scenario.start()) {
       SimElevatorIO io = new SimElevatorIO(); // right 15T, left 16T, like the stand
       Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
@@ -251,29 +251,32 @@ class ElevatorScenarioTest {
       sc.enable();
       e.goTo(e.lowInches()).schedule();
       sc.run(2.0);
-      e.goTo(e.highInches()).schedule();
-      double worstGap = 0, peak = 0;
-      int opposed = 0;
-      for (int i = 0; i < 50; i++) {
-        sc.run(0.02);
-        double r = io.rightStatorAmps(), l = io.leftStatorAmps();
-        worstGap = Math.max(worstGap, Math.abs(r - l));
-        peak = Math.max(peak, Math.max(Math.abs(r), Math.abs(l)));
-        if (r * l < 0 && Math.min(Math.abs(r), Math.abs(l)) > 0.5) {
-          opposed++;
+      // Holding still: the same volts and no back-EMF, so the same current in both.
+      assertEquals(io.rightStatorAmps(), io.leftStatorAmps(), 0.05);
+      for (boolean up : new boolean[] {true, false}) {
+        e.goTo(up ? e.highInches() : e.lowInches()).schedule();
+        double worstGap = 0, peak = 0, worstVoltGap = 0, worstPerSpeed = 0;
+        for (int i = 0; i < 75; i++) {
+          sc.run(0.02);
+          double r = io.rightStatorAmps(), l = io.leftStatorAmps();
+          worstGap = Math.max(worstGap, Math.abs(r - l));
+          peak = Math.max(peak, Math.max(Math.abs(r), Math.abs(l)));
+          worstVoltGap = Math.max(worstVoltGap, Math.abs(io.rightVolts() - io.leftVolts()));
+          double speed = Math.abs(io.physicalVelocity());
+          if (speed > 5) {
+            worstPerSpeed = Math.max(worstPerSpeed, Math.abs(r - l) / speed);
+          }
         }
+        System.out.printf(
+            "fast move %s: peak %.2f A, worst right-left gap %.3f A (%.3f A per in/s), volts gap %.4f V%n",
+            up ? "up" : "down", peak, worstGap, worstPerSpeed, worstVoltGap);
+        // One loop: the follower gets the leader's volts (below the current limit).
+        assertEquals(0.0, worstVoltGap, 1e-9);
+        // The only difference is back-EMF: the right spins 16/15 as fast. About 0.1 A per in/s.
+        assertTrue(worstPerSpeed < 0.15, "gap per in/s " + worstPerSpeed);
+        assertEquals(up ? e.highInches() : e.lowInches(), io.physicalInches(), 0.03);
+        assertEquals(io.rightStatorAmps(), io.leftStatorAmps(), 0.05);
       }
-      System.out.printf(
-          "fast move: peak %.2f A, worst right-left gap %.3f A, opposed %d of 50%n", peak, worstGap, opposed);
-      // Only the right corrects position (LEFT_FEEDBACK false), so the gap is the feedforward's
-      // error, which the right makes up. With kS/kG/kV/kA measured (EL29) the gap was 4.5 A with
-      // the predicted gains and is now under 1 A. The two must never pull against each other.
-      // Holding, static friction can leave a few thousandths of an inch of error, so the right's
-      // P term carries up to about 1 A more than the left (0.8 A here: 0.035 V at kP 8).
-      assertEquals(0, opposed);
-      assertTrue(worstGap < 1.5, "worst gap " + worstGap);
-      assertEquals(io.rightStatorAmps(), io.leftStatorAmps(), 1.0);
-      assertEquals(e.highInches(), io.physicalInches(), 0.03);
     }
   }
 

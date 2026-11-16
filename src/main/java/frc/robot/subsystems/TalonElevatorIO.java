@@ -8,6 +8,7 @@ import com.ctre.phoenix6.configs.Slot0Configs;
 import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.configs.VoltageConfigs;
+import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.MotionMagicVoltage;
 import com.ctre.phoenix6.controls.NeutralOut;
 import com.ctre.phoenix6.controls.VoltageOut;
@@ -15,6 +16,7 @@ import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.ControlModeValue;
 import com.ctre.phoenix6.signals.GravityTypeValue;
 import com.ctre.phoenix6.signals.InvertedValue;
+import com.ctre.phoenix6.signals.MotorAlignmentValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 import com.ctre.phoenix6.signals.StaticFeedforwardSignValue;
 import frc.robot.hardware.Unit;
@@ -24,14 +26,18 @@ import frc.robot.hardware.Unit;
  * and the left motor clockwise raises it, so the right is CounterClockwise_Positive and the left
  * Clockwise_Positive.
  *
- * <p>The two sides are geared differently (right 15T pinion, left 16T, both to 46T on the shaft),
- * so each Talon has its OWN SensorToMechanismRatio, its own motor rotations per inch. Both then
- * work in true INCHES, and each runs its own copy of every request (the same Motion Magic move, or
- * the same open-loop volts). Only the right Talon has kP/kD (unless {@link Elevator#LEFT_FEEDBACK}):
- * the left adds the feedforward, so two position loops never pull against each other through the
- * gear slack. No Follower: a follower copies the leader's volts, and with different
- * gearing the same volts make the two motors fight. The right Talon's kV is scaled by {@link
- * Unit#rightKvScale()} (16/15), because it spins faster for the same carriage speed.
+ * <p>ONE loop: the right Talon LEADS (Motion Magic with kS, kG, kV, kA, kP, kD, or open-loop
+ * volts) and the left is a CTRE {@link Follower} of it, Opposed (mounted mirrored), so both motors
+ * always get the same volts. That is how kS/kG/kV/kA were measured (EL29, both motors at the same
+ * volts), so the gains are for the pair and the right's slot uses them unscaled. With each Talon
+ * running its own copy of the move (EL28-EL30), the left's share depended on its own feedforward
+ * being exact, and the two pulled against each other (EL30: opposed 38% of descents).
+ *
+ * <p>The sides are geared differently (right 15T pinion, left 16T, both to 46T on the shaft), so
+ * each Talon has its OWN SensorToMechanismRatio and both encoders read true inches. With the same
+ * volts the left, spinning 15/16 as fast, has less back-EMF and carries more current while moving
+ * (about 0.1 A more per in/s); holding still they carry the same. The left has no soft limits of
+ * its own, so it can never stop following on its own: the right's soft limits guard both.
  */
 public class TalonElevatorIO implements ElevatorIO {
   private static final double CONFIG_TIMEOUT_S = 0.05;
@@ -39,11 +45,9 @@ public class TalonElevatorIO implements ElevatorIO {
 
   private final TalonFX right;
   private final TalonFX left;
-  private final double rightKvScale;
-  private final MotionMagicVoltage rightMove = new MotionMagicVoltage(0).withEnableFOC(false);
-  private final MotionMagicVoltage leftMove = new MotionMagicVoltage(0).withEnableFOC(false);
-  private final VoltageOut rightVoltsReq = new VoltageOut(0).withEnableFOC(false);
-  private final VoltageOut leftVoltsReq = new VoltageOut(0).withEnableFOC(false);
+  private final MotionMagicVoltage move = new MotionMagicVoltage(0).withEnableFOC(false);
+  private final VoltageOut voltsReq = new VoltageOut(0).withEnableFOC(false);
+  private final Follower follow;
   private final NeutralOut neutral = new NeutralOut();
   private final StatusSignal<?>[] rightSignals;
   private final StatusSignal<?>[] leftSignals;
@@ -55,9 +59,9 @@ public class TalonElevatorIO implements ElevatorIO {
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
     left = new TalonFX(unit.leftMotorId());
-    rightKvScale = unit.rightKvScale();
-    configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), rightKvScale, true);
-    configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), 1.0, Elevator.LEFT_FEEDBACK);
+    follow = new Follower(right.getDeviceID(), MotorAlignmentValue.Opposed);
+    configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), true);
+    configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), false);
     right.setPosition(0);
     left.setPosition(0);
     rightSignals = signalsOf(right);
@@ -90,8 +94,9 @@ public class TalonElevatorIO implements ElevatorIO {
     return new Extras(v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14]);
   }
 
+  /** leader: the right Talon, with the gains and soft limits; the follower gets neither. */
   private static void configure(
-      TalonFX motor, InvertedValue direction, double rotationsPerInch, double kvScale, boolean feedback) {
+      TalonFX motor, InvertedValue direction, double rotationsPerInch, boolean leader) {
     var cfg = new TalonFXConfiguration();
     cfg.MotorOutput.Inverted = direction;
     cfg.MotorOutput.NeutralMode = NeutralModeValue.Brake;
@@ -103,31 +108,30 @@ public class TalonElevatorIO implements ElevatorIO {
     cfg.CurrentLimits.StatorCurrentLimitEnable = true;
     cfg.CurrentLimits.SupplyCurrentLimit = Elevator.DEFAULT_STATOR_AMPS;
     cfg.CurrentLimits.SupplyCurrentLimitEnable = true;
-    cfg.Slot0 = slot0(Elevator.DEFAULT_GAINS, kvScale, feedback);
-    cfg.MotionMagic = motionMagic(Elevator.DEFAULT_GAINS);
-    // Until the travel is measured, soft limits assume zero is the bottom and nominal travel.
-    cfg.SoftwareLimitSwitch.ForwardSoftLimitEnable = true;
-    cfg.SoftwareLimitSwitch.ForwardSoftLimitThreshold =
-        Elevator.NOMINAL_TRAVEL_INCHES - Elevator.SOFT_LIMIT_MARGIN_INCHES;
-    cfg.SoftwareLimitSwitch.ReverseSoftLimitEnable = true;
-    cfg.SoftwareLimitSwitch.ReverseSoftLimitThreshold = Elevator.SOFT_LIMIT_MARGIN_INCHES;
+    if (leader) {
+      cfg.Slot0 = slot0(Elevator.DEFAULT_GAINS);
+      cfg.MotionMagic = motionMagic(Elevator.DEFAULT_GAINS);
+      // Until the travel is measured, soft limits assume zero is the bottom and nominal travel.
+      cfg.SoftwareLimitSwitch.ForwardSoftLimitEnable = true;
+      cfg.SoftwareLimitSwitch.ForwardSoftLimitThreshold =
+          Elevator.NOMINAL_TRAVEL_INCHES - Elevator.SOFT_LIMIT_MARGIN_INCHES;
+      cfg.SoftwareLimitSwitch.ReverseSoftLimitEnable = true;
+      cfg.SoftwareLimitSwitch.ReverseSoftLimitThreshold = Elevator.SOFT_LIMIT_MARGIN_INCHES;
+    }
     motor.getConfigurator().apply(cfg);
   }
 
-  /**
-   * Slot 0 from the gains; kV is for the 16T (left) motor and scaled by kvScale. Without feedback
-   * kP and kD are zero: the Talon follows the same Motion Magic move on feedforward alone.
-   */
-  private static Slot0Configs slot0(Gains g, double kvScale, boolean feedback) {
+  /** Slot 0 from the gains, for the pair of motors at the same volts (as measured). */
+  private static Slot0Configs slot0(Gains g) {
     var s = new Slot0Configs();
     s.GravityType = GravityTypeValue.Elevator_Static;
     s.StaticFeedforwardSign = StaticFeedforwardSignValue.UseVelocitySign;
     s.kS = g.kS();
     s.kG = g.kG();
-    s.kV = g.kV() * kvScale;
+    s.kV = g.kV();
     s.kA = g.kA();
-    s.kP = feedback ? g.kP() : 0.0;
-    s.kD = feedback ? g.kD() : 0.0;
+    s.kP = g.kP();
+    s.kD = g.kD();
     return s;
   }
 
@@ -141,13 +145,9 @@ public class TalonElevatorIO implements ElevatorIO {
 
   @Override
   public void applyGains(Gains g) {
-    // Both Talons run the move: the same feedforward in inches, kV scaled for the right's gearing;
-    // kP and kD only on the right unless LEFT_FEEDBACK.
-    right.getConfigurator().apply(slot0(g, rightKvScale, true), CONFIG_TIMEOUT_S);
-    left.getConfigurator().apply(slot0(g, 1.0, Elevator.LEFT_FEEDBACK), CONFIG_TIMEOUT_S);
-    for (TalonFX m : new TalonFX[] {right, left}) {
-      m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
-    }
+    // Only the leader runs the loop; the follower copies its volts.
+    right.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S);
+    right.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
   }
 
   @Override
@@ -173,20 +173,20 @@ public class TalonElevatorIO implements ElevatorIO {
     s.ReverseSoftLimitEnable = reverseOn;
     s.ForwardSoftLimitThreshold = forwardInches;
     s.ForwardSoftLimitEnable = forwardOn;
+    // The leader's only: the follower must never stop following on its own.
     right.getConfigurator().apply(s, CONFIG_TIMEOUT_S);
-    left.getConfigurator().apply(s, CONFIG_TIMEOUT_S);
   }
 
   @Override
   public void moveTo(double inches) {
-    right.setControl(rightMove.withPosition(inches));
-    left.setControl(leftMove.withPosition(inches));
+    right.setControl(move.withPosition(inches));
+    left.setControl(follow);
   }
 
   @Override
   public void setVolts(double volts) {
-    right.setControl(rightVoltsReq.withOutput(volts));
-    left.setControl(leftVoltsReq.withOutput(volts));
+    right.setControl(voltsReq.withOutput(volts));
+    left.setControl(follow);
   }
 
   @Override

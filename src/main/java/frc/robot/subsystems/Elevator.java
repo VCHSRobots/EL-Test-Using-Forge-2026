@@ -24,9 +24,9 @@ import java.util.function.Supplier;
  * The two-motor elevator stand. Heights are inches above the bottom hard stop, found by
  * auto-range (bottom, then top) on the first enable after the program starts.
  *
- * <p>Moves are Motion Magic profiles run inside BOTH Talons at 1 kHz (each with its own gearing,
- * the same move in inches), with gravity (kG), friction (kS), velocity (kV) and acceleration (kA)
- * feedforward and a PD loop. Gains, profile limits and output caps are live-tunable under /Elevator/Tuning/ (applied
+ * <p>Moves are Motion Magic profiles run inside the right Talon at 1 kHz, with gravity (kG),
+ * friction (kS), velocity (kV) and acceleration (kA) feedforward and a PD loop; the left Talon
+ * follows it (the same volts). Gains, profile limits and output caps are live-tunable under /Elevator/Tuning/ (applied
  * while disabled). Commanded heights always stay {@link #STOP_MARGIN_INCHES} inside the measured
  * travel, and the Talons' soft limits sit just inside the stops.
  *
@@ -47,20 +47,11 @@ public class Elevator extends SubsystemBase {
   public static final double SOFT_LIMIT_MARGIN_INCHES = 0.10;
 
   // --- Defaults: kS, kG, kV, kA measured on EL29 (run cf3877f1, see NOTES.md) ---
-  // kV is for the 16T (left) motor; the right Talon gets kV x 16/15 (Unit.rightKvScale). The fit
-  // gave 0.0643 V/(in/s) with the same volts on both motors; per motor that is 0.0621 on the left
-  // and 0.0663 on the right.
-  // kP and kD act on the RIGHT motor only (see LEFT_FEEDBACK), so they are twice the old
-  // per-motor 4 V/in and 0.05 V/(in/s): the same total correction as when both motors had them.
+  // All four are for the PAIR of motors at the same volts, as they were measured and as the
+  // follower runs them (the right Talon leads, the left copies its volts).
+  // kP 8 V/in and kD 0.10 V/(in/s) on the pair: not tuned yet (the next step is a sweep).
   public static final ElevatorIO.Gains DEFAULT_GAINS =
-      new ElevatorIO.Gains(0.12, 0.16, 0.0621, 0.0010, 8.0, 0.10, 10.0, 60.0, 0.0);
-  /**
-   * Whether the left Talon runs kP/kD too. False: the left runs only the feedforward (kS, kG, kV,
-   * kA) of the same Motion Magic move, and the right alone corrects position. With both correcting
-   * (EL28), gear slack let the two encoders disagree by 0.02-0.1 in and the two P terms pulled
-   * against each other: right 3.1 A against left 1.1 A on moves, opposed 45% of the time holding.
-   */
-  public static final boolean LEFT_FEEDBACK = false;
+      new ElevatorIO.Gains(0.12, 0.16, 0.0643, 0.0010, 8.0, 0.10, 10.0, 60.0, 0.0);
   public static final double DEFAULT_PEAK_VOLTS = 3.0;
   public static final double DEFAULT_STATOR_AMPS = 20.0;
   /** Hard ceilings the tuning values can never exceed. */
