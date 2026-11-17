@@ -498,4 +498,36 @@ class ElevatorScenarioTest {
       assertFalse(e.isParked());
     }
   }
+
+  @Test
+  void currentAndItsPeakArePublishedAndThePeakResetsAtEachEnable() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.park().schedule();
+      sc.run(3.0);
+      var nt = NetworkTableInstance.getDefault();
+      nt.getEntry("/Elevator/Control/Routine").setString("fulltravel");
+      double maxSeen = 0;
+      for (int i = 0; i < 300; i++) {
+        sc.run(0.02);
+        double r = Math.abs(nt.getEntry("/Elevator/Status/RightStatorAmps").getDouble(0));
+        double l = Math.abs(nt.getEntry("/Elevator/Status/LeftStatorAmps").getDouble(0));
+        maxSeen = Math.max(maxSeen, Math.max(r, l));
+      }
+      double peak = nt.getEntry("/Elevator/Status/PeakStatorAmps").getDouble(-1);
+      double frac = nt.getEntry("/Elevator/Status/PeakVoltsFractionOfBattery").getDouble(-1);
+      System.out.printf("current topics: max sampled %.1f A, published peak %.1f A, peak V/battery %.2f%n", maxSeen, peak, frac);
+      assertTrue(maxSeen > 5, "a full-travel move should draw current: " + maxSeen);
+      assertTrue(peak >= maxSeen - 1e-9, "peak " + peak + " below a sample " + maxSeen);
+      assertEquals(peak, e.peakStatorAmps(), 1e-9);
+      assertTrue(frac > 0.1 && frac <= 1.01, "volts fraction " + frac);
+      // A new enable starts the peaks again.
+      sc.disable();
+      sc.run(0.1);
+      sc.enable();
+      sc.run(0.04);
+      assertTrue(e.peakStatorAmps() < peak, "peak should reset at enable: " + e.peakStatorAmps());
+    }
+  }
 }

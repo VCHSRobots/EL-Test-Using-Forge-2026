@@ -128,6 +128,17 @@ public class Elevator extends SubsystemBase {
   private final DoublePublisher profileErrorPub;
   private final DoublePublisher kPInUsePub;
   private final DoublePublisher kDInUsePub;
+  private final DoublePublisher rightStatorPub;
+  private final DoublePublisher leftStatorPub;
+  private final DoublePublisher rightSupplyPub;
+  private final DoublePublisher leftSupplyPub;
+  private final DoublePublisher motorVoltsPub;
+  private final DoublePublisher batteryVoltsPub;
+  private final DoublePublisher peakStatorPub;
+  private final DoublePublisher peakSupplyPub;
+  private final DoublePublisher peakMotorVoltsPub;
+  private final DoublePublisher minBatteryVoltsPub;
+  private final DoublePublisher peakVoltsFractionPub;
   private final ElevatorView view = new ElevatorView(NOMINAL_TRAVEL_INCHES);
   private final Map<String, Supplier<Command>> routines;
   private String lastRoutineRequest = "";
@@ -222,6 +233,15 @@ public class Elevator extends SubsystemBase {
   double joystickAxis;
   double kS, kG, kV, kA, kP, kD, cruiseInPerSec, accelInPerSec2, jerkInPerSec3, peakVolts, statorAmps;
 
+  // Peaks since the last enable, also published to NetworkTables (headroom check: stator vs 32 A,
+  // motor volts vs 80% of the battery), so a script sees them even when no robot log reaches Forge.
+  double peakStatorAmps;
+  double peakSupplyAmps;
+  double peakMotorVolts;
+  double minBatteryVolts = Double.NaN;
+  double peakVoltsFractionOfBattery;
+
+  private boolean wasEnabled;
   private double faultTimer;
   private double lastPeriodic = Timer.getFPGATimestamp();
 
@@ -258,6 +278,17 @@ public class Elevator extends SubsystemBase {
     profileErrorPub = status.getDoubleTopic("ProfileErrorInches").publish();
     kPInUsePub = status.getDoubleTopic("kPInUse").publish();
     kDInUsePub = status.getDoubleTopic("kDInUse").publish();
+    rightStatorPub = status.getDoubleTopic("RightStatorAmps").publish();
+    leftStatorPub = status.getDoubleTopic("LeftStatorAmps").publish();
+    rightSupplyPub = status.getDoubleTopic("RightSupplyAmps").publish();
+    leftSupplyPub = status.getDoubleTopic("LeftSupplyAmps").publish();
+    motorVoltsPub = status.getDoubleTopic("MotorVolts").publish();
+    batteryVoltsPub = status.getDoubleTopic("BatteryVolts").publish();
+    peakStatorPub = status.getDoubleTopic("PeakStatorAmps").publish();
+    peakSupplyPub = status.getDoubleTopic("PeakSupplyAmps").publish();
+    peakMotorVoltsPub = status.getDoubleTopic("PeakMotorVolts").publish();
+    minBatteryVoltsPub = status.getDoubleTopic("MinBatteryVolts").publish();
+    peakVoltsFractionPub = status.getDoubleTopic("PeakVoltsFractionOfBattery").publish();
     parkedPub.set(false);
     routinePub.set("");
     routines =
@@ -788,9 +819,52 @@ public class Elevator extends SubsystemBase {
     profileErrorPub.set(profileErrorInches);
     kPInUsePub.set(kP);
     kDInUsePub.set(kD);
+    publishPower(enabled);
     view.update(positionInches);
     routinePub.set(getCurrentCommand() == null ? "" : getCurrentCommand().getName());
   }
+
+  /**
+   * Current and voltage to NetworkTables every loop, with their peaks since the last enable (reset
+   * at each enable), so a test script can check the headroom rule from what it records.
+   */
+  private void publishPower(boolean enabled) {
+    if (enabled && !wasEnabled) {
+      peakStatorAmps = 0;
+      peakSupplyAmps = 0;
+      peakMotorVolts = 0;
+      minBatteryVolts = Double.NaN;
+      peakVoltsFractionOfBattery = 0;
+    }
+    wasEnabled = enabled;
+    double motorVolts = Math.max(Math.abs(rightVolts), Math.abs(leftVolts));
+    if (enabled) {
+      peakStatorAmps = Math.max(peakStatorAmps, Math.max(Math.abs(rightStatorAmps), Math.abs(leftStatorAmps)));
+      peakSupplyAmps = Math.max(peakSupplyAmps, Math.max(Math.abs(rightSupplyAmps), Math.abs(leftSupplyAmps)));
+      peakMotorVolts = Math.max(peakMotorVolts, motorVolts);
+      if (batteryVolts > 1.0) {
+        minBatteryVolts = Double.isNaN(minBatteryVolts) ? batteryVolts : Math.min(minBatteryVolts, batteryVolts);
+        peakVoltsFractionOfBattery = Math.max(peakVoltsFractionOfBattery, motorVolts / batteryVolts);
+      }
+    }
+    rightStatorPub.set(rightStatorAmps);
+    leftStatorPub.set(leftStatorAmps);
+    rightSupplyPub.set(rightSupplyAmps);
+    leftSupplyPub.set(leftSupplyAmps);
+    motorVoltsPub.set(motorVolts);
+    batteryVoltsPub.set(batteryVolts);
+    peakStatorPub.set(peakStatorAmps);
+    peakSupplyPub.set(peakSupplyAmps);
+    peakMotorVoltsPub.set(peakMotorVolts);
+    minBatteryVoltsPub.set(Double.isNaN(minBatteryVolts) ? 0.0 : minBatteryVolts);
+    peakVoltsFractionPub.set(peakVoltsFractionOfBattery);
+  }
+
+  /** Peak stator current of either motor since the last enable, amps. */
+  public double peakStatorAmps() { return peakStatorAmps; }
+
+  /** Peak of either motor's volts over the battery volts since the last enable. */
+  public double peakVoltsFractionOfBattery() { return peakVoltsFractionOfBattery; }
 
   /** Runs a routine named in /Elevator/Control/Routine when the name changes (while enabled). */
   private void handleRoutineRequest() {
