@@ -51,9 +51,9 @@ public class Elevator extends SubsystemBase {
   // follower runs them (the right Talon leads, the left copies its volts).
   // kP 8 V/in and kD 0.10 V/(in/s) on the pair: not tuned yet (the next step is a sweep).
   public static final ElevatorIO.Gains DEFAULT_GAINS =
-      new ElevatorIO.Gains(0.12, 0.16, 0.0643, 0.0010, 8.0, 0.10, 10.0, 60.0, 0.0);
-  public static final double DEFAULT_PEAK_VOLTS = 3.0;
-  public static final double DEFAULT_STATOR_AMPS = 20.0;
+      new ElevatorIO.Gains(0.12, 0.16, 0.0643, 0.0010, 4.0, 0.0, 90.0, 700.0, 0.0);
+  public static final double DEFAULT_PEAK_VOLTS = 12.0;
+  public static final double DEFAULT_STATOR_AMPS = 40.0;
   /** Hard ceilings the tuning values can never exceed. */
   public static final double MAX_PEAK_VOLTS = 12.0;
   public static final double MAX_STATOR_AMPS = 40.0;
