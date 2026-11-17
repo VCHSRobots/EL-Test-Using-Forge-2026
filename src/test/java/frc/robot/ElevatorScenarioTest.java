@@ -127,7 +127,7 @@ class ElevatorScenarioTest {
   }
 
   @Test
-  void defaultTuningIsGentleAndAccurate() {
+  void defaultTuningIsFastAndAccurate() {
     try (Scenario sc = Scenario.start()) {
       SimElevatorIO io = new SimElevatorIO();
       Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
@@ -135,9 +135,12 @@ class ElevatorScenarioTest {
       sc.run(3.0);
       Metrics m = Metrics.move(sc, io, e, e.highInches(), 3.0);
       System.out.println("default tuning, full move: " + m);
-      assertTrue(m.settleSeconds() < 1.4, m.toString());
+      // the defaults are the 17 Nov fast settings (90 in/s, 700 in/s^2, kP 4)
+      assertTrue(m.settleSeconds() < 0.3, m.toString());
+      assertTrue(Math.abs(m.overshootInches()) < 0.05, m.toString());
       assertTrue(Math.abs(m.holdErrorInches()) < 0.02, m.toString());
-      assertTrue(m.peakSpeed() < 10.5, m.toString());
+      assertTrue(m.peakSpeed() < 91, m.toString());
+      assertTrue(m.peakAmps() < 32, m.toString());
     }
   }
 
