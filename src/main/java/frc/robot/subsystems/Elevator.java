@@ -57,8 +57,8 @@ public class Elevator extends SubsystemBase {
   /** Hard ceilings the tuning values can never exceed. */
   public static final double MAX_PEAK_VOLTS = 12.0;
   public static final double MAX_STATOR_AMPS = 40.0;
-  public static final double MAX_CRUISE_IN_PER_SEC = 60.0;
-  public static final double MAX_ACCEL_IN_PER_SEC2 = 600.0;
+  public static final double MAX_CRUISE_IN_PER_SEC = 90.0;
+  public static final double MAX_ACCEL_IN_PER_SEC2 = 900.0;
 
   // --- Stick ---
   public static final int STICK_PORT = 0;
