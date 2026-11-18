@@ -147,6 +147,38 @@ class ElevatorScenarioTest {
   }
 
   @Test
+  void jerkIsClampedToTheTalonRangeAndTheAppliedSettingsArePublished() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      var nt = NetworkTableInstance.getDefault().getTable("Elevator/Status");
+      // A full move at the defaults: the profile is timed (simulation: a trapezoid, no jerk).
+      e.goTo(e.lowInches()).schedule();
+      sc.run(1.0);
+      long timed = e.profilesTimed();
+      e.goTo(e.highInches()).schedule();
+      sc.run(1.0);
+      assertEquals(timed + 1, e.profilesTimed());
+      double d = e.highInches() - e.lowInches();
+      double expected = 2 * Math.sqrt(d / Elevator.DEFAULT_GAINS.accelInPerSec2()); // never reaches 90 in/s
+      System.out.println("profile " + e.lastProfileSeconds() + " s over " + e.lastProfileInches() + " in, expected " + expected);
+      assertEquals(d, e.lastProfileInches(), 0.02);
+      assertEquals(expected, e.lastProfileSeconds(), 0.03); // 20 ms loop resolution
+      assertEquals(e.lastProfileSeconds(), nt.getEntry("LastProfileSeconds").getDouble(-1), 1e-9);
+      // A jerk above CTRE's 9999 is clamped, written and read back; the write is reported OK.
+      e.park().schedule();
+      sc.run(3.0);
+      e.tuning().set("JerkInPerSec3", 40000);
+      sc.run(0.1);
+      assertEquals(Elevator.MAX_JERK_IN_PER_SEC3, e.applied().jerkInPerSec3(), 1e-9);
+      assertEquals(Elevator.MAX_JERK_IN_PER_SEC3, nt.getEntry("TalonJerkInPerSec3").getDouble(-1), 1e-9);
+      assertTrue(nt.getEntry("ConfigOk").getBoolean(false));
+      assertEquals("OK", nt.getEntry("ConfigStatus").getString(""));
+      assertEquals(Elevator.DEFAULT_GAINS.accelInPerSec2(), nt.getEntry("TalonAccelInPerSec2").getDouble(-1), 1e-9);
+    }
+  }
+
+  @Test
   void abortCutsTheOutputUntilCleared() {
     try (Scenario sc = Scenario.start()) {
       SimElevatorIO io = new SimElevatorIO();

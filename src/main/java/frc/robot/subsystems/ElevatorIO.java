@@ -82,6 +82,25 @@ public interface ElevatorIO {
   /** Writes the output caps (peak volts, stator and supply amps). May block: call while disabled. */
   void applyCaps(double peakVolts, double statorAmps);
 
+  /**
+   * What the leading controller holds, READ BACK from it after the last write (not what was asked
+   * for), and whether every write since the last applyGains was accepted. ok false with status
+   * naming the failed write and the controller's answer (CTRE StatusCode name). writes counts the
+   * applyGains calls, so a test can tell its own write has landed.
+   */
+  record Applied(
+      double cruiseInPerSec,
+      double accelInPerSec2,
+      double jerkInPerSec3,
+      double kA,
+      double kP,
+      double kD,
+      boolean ok,
+      String status,
+      int writes) {}
+
+  Applied applied();
+
   /** The controllers' own soft limits, in inches. May block ~50 ms per motor. */
   void setSoftLimits(double reverseInches, boolean reverseOn, double forwardInches, boolean forwardOn);
 

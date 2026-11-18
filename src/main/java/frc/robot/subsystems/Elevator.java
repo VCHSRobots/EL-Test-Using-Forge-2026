@@ -1,6 +1,7 @@
 package frc.robot.subsystems;
 
 import edu.wpi.first.epilogue.Logged;
+import edu.wpi.first.epilogue.NotLogged;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.networktables.BooleanPublisher;
 import edu.wpi.first.networktables.BooleanSubscriber;
@@ -59,6 +60,12 @@ public class Elevator extends SubsystemBase {
   public static final double MAX_STATOR_AMPS = 40.0;
   public static final double MAX_CRUISE_IN_PER_SEC = 90.0;
   public static final double MAX_ACCEL_IN_PER_SEC2 = 900.0;
+  /**
+   * CTRE's range for MotionMagicJerk is 0-9999 (mechanism rotations/s^3; our mechanism unit is the
+   * inch). A write above it is refused and the Talon keeps its old Motion Magic settings: the
+   * 18 Nov jerk sweep wrote 10000-40000 and could not tell what ran. Tuning clamps to this.
+   */
+  public static final double MAX_JERK_IN_PER_SEC3 = 9999.0;
 
   // --- Stick ---
   public static final int STICK_PORT = 0;
@@ -139,6 +146,20 @@ public class Elevator extends SubsystemBase {
   private final DoublePublisher peakMotorVoltsPub;
   private final DoublePublisher minBatteryVoltsPub;
   private final DoublePublisher peakVoltsFractionPub;
+  // What the leading Talon holds, read back from it after each write (not what was asked for).
+  private final DoublePublisher talonCruisePub;
+  private final DoublePublisher talonAccelPub;
+  private final DoublePublisher talonJerkPub;
+  private final DoublePublisher talonKAPub;
+  private final DoublePublisher talonKPPub;
+  private final DoublePublisher talonKDPub;
+  private final BooleanPublisher configOkPub;
+  private final StringPublisher configStatusPub;
+  private final IntegerPublisher configWritesPub;
+  // The Talon's own profile, timed: from a new target to the reference arriving at it.
+  private final DoublePublisher lastProfileSecondsPub;
+  private final DoublePublisher lastProfileInchesPub;
+  private final IntegerPublisher profilesTimedPub;
   private final ElevatorView view = new ElevatorView(NOMINAL_TRAVEL_INCHES);
   private final Map<String, Supplier<Command>> routines;
   private String lastRoutineRequest = "";
@@ -167,6 +188,21 @@ public class Elevator extends SubsystemBase {
   double profileErrorInches;
   double openLoopVolts;
   boolean closedLoop;
+  // Read back from the Talon (see ElevatorIO.Applied).
+  double talonCruiseInPerSec, talonAccelInPerSec2, talonJerkInPerSec3, talonKA, talonKP, talonKD;
+  boolean configOk;
+  String configStatus = "";
+  /**
+   * How long the leader's Motion Magic reference took to go from the height it was asked to leave
+   * to its target (20 ms resolution), and how far. This is the profile itself, not the carriage, so
+   * it shows directly whether the cruise, acceleration and jerk in the Talon are the ones expected
+   * (a jerk limit lengthens it by about acceleration / jerk).
+   */
+  double lastProfileSeconds;
+  double lastProfileInches;
+  long profilesTimed;
+  private double profileStartTime = Double.NaN;
+  private double profileStartInches;
   boolean fault;
   boolean aborted;
   boolean ranged;
@@ -257,7 +293,7 @@ public class Elevator extends SubsystemBase {
         .add("kD", g.kD(), 0, 2)
         .add("CruiseInPerSec", g.cruiseInPerSec(), 0.5, MAX_CRUISE_IN_PER_SEC)
         .add("AccelInPerSec2", g.accelInPerSec2(), 1, MAX_ACCEL_IN_PER_SEC2)
-        .add("JerkInPerSec3", g.jerkInPerSec3(), 0, 100000)
+        .add("JerkInPerSec3", g.jerkInPerSec3(), 0, MAX_JERK_IN_PER_SEC3)
         .add("PeakVolts", DEFAULT_PEAK_VOLTS, 1, MAX_PEAK_VOLTS)
         .add("StatorAmps", DEFAULT_STATOR_AMPS, 5, MAX_STATOR_AMPS)
         .add("DanceSeconds", 180, 5, 1800)
@@ -289,6 +325,18 @@ public class Elevator extends SubsystemBase {
     peakMotorVoltsPub = status.getDoubleTopic("PeakMotorVolts").publish();
     minBatteryVoltsPub = status.getDoubleTopic("MinBatteryVolts").publish();
     peakVoltsFractionPub = status.getDoubleTopic("PeakVoltsFractionOfBattery").publish();
+    talonCruisePub = status.getDoubleTopic("TalonCruiseInPerSec").publish();
+    talonAccelPub = status.getDoubleTopic("TalonAccelInPerSec2").publish();
+    talonJerkPub = status.getDoubleTopic("TalonJerkInPerSec3").publish();
+    talonKAPub = status.getDoubleTopic("TalonkA").publish();
+    talonKPPub = status.getDoubleTopic("TalonkP").publish();
+    talonKDPub = status.getDoubleTopic("TalonkD").publish();
+    configOkPub = status.getBooleanTopic("ConfigOk").publish();
+    configStatusPub = status.getStringTopic("ConfigStatus").publish();
+    configWritesPub = status.getIntegerTopic("ConfigWrites").publish();
+    lastProfileSecondsPub = status.getDoubleTopic("LastProfileSeconds").publish();
+    lastProfileInchesPub = status.getDoubleTopic("LastProfileInches").publish();
+    profilesTimedPub = status.getIntegerTopic("ProfilesTimed").publish();
     parkedPub.set(false);
     routinePub.set("");
     routines =
@@ -355,7 +403,12 @@ public class Elevator extends SubsystemBase {
 
   /** Profiled move to a height, clamped to the usable range. */
   private void moveTo(double inches) {
-    targetInches = MathUtil.clamp(inches, lowInches(), highInches());
+    double target = MathUtil.clamp(inches, lowInches(), highInches());
+    if (!closedLoop || Math.abs(target - targetInches) > 1e-6) {
+      profileStartTime = Timer.getFPGATimestamp();
+      profileStartInches = positionInches;
+    }
+    targetInches = target;
     closedLoop = true;
     openLoopVolts = 0;
     if (blocked()) {
@@ -819,6 +872,8 @@ public class Elevator extends SubsystemBase {
     profileErrorPub.set(profileErrorInches);
     kPInUsePub.set(kP);
     kDInUsePub.set(kD);
+    timeProfile();
+    publishApplied();
     publishPower(enabled);
     view.update(positionInches);
     routinePub.set(getCurrentCommand() == null ? "" : getCurrentCommand().getName());
@@ -859,6 +914,53 @@ public class Elevator extends SubsystemBase {
     minBatteryVoltsPub.set(Double.isNaN(minBatteryVolts) ? 0.0 : minBatteryVolts);
     peakVoltsFractionPub.set(peakVoltsFractionOfBattery);
   }
+
+  /** Ends the timing of a profile once the reference has arrived at the target. */
+  private void timeProfile() {
+    if (!closedLoop || Double.isNaN(profileStartTime)) {
+      profileStartTime = Double.NaN;
+      return;
+    }
+    if (Double.isNaN(profileInches) || Double.isNaN(profileVelocityInPerSec)) return;
+    if (Math.abs(profileInches - targetInches) < 0.002 && Math.abs(profileVelocityInPerSec) < 0.05) {
+      lastProfileSeconds = Timer.getFPGATimestamp() - profileStartTime;
+      lastProfileInches = Math.abs(targetInches - profileStartInches);
+      profilesTimed++;
+      profileStartTime = Double.NaN;
+    }
+  }
+
+  private void publishApplied() {
+    ElevatorIO.Applied a = io.applied();
+    talonCruiseInPerSec = a.cruiseInPerSec();
+    talonAccelInPerSec2 = a.accelInPerSec2();
+    talonJerkInPerSec3 = a.jerkInPerSec3();
+    talonKA = a.kA();
+    talonKP = a.kP();
+    talonKD = a.kD();
+    configOk = a.ok();
+    configStatus = a.status();
+    talonCruisePub.set(talonCruiseInPerSec);
+    talonAccelPub.set(talonAccelInPerSec2);
+    talonJerkPub.set(talonJerkInPerSec3);
+    talonKAPub.set(talonKA);
+    talonKPPub.set(talonKP);
+    talonKDPub.set(talonKD);
+    configOkPub.set(configOk);
+    configStatusPub.set(configStatus);
+    configWritesPub.set(a.writes());
+    lastProfileSecondsPub.set(lastProfileSeconds);
+    lastProfileInchesPub.set(lastProfileInches);
+    profilesTimedPub.set(profilesTimed);
+  }
+
+  /** The leader's settings as read back from it, and whether every write was accepted. */
+  @NotLogged
+  public ElevatorIO.Applied applied() { return io.applied(); }
+
+  public double lastProfileSeconds() { return lastProfileSeconds; }
+  public double lastProfileInches() { return lastProfileInches; }
+  public long profilesTimed() { return profilesTimed; }
 
   /** Peak stator current of either motor since the last enable, amps. */
   public double peakStatorAmps() { return peakStatorAmps; }
