@@ -83,11 +83,10 @@ This is the 2026 season: GradleRIO 2026.2.1 (`build.gradle`), `frcYear = '2026'`
 3. Replace the vendordeps: `WPILibNewCommands.json` from the `allwpilib` tag of that release, and CTRE's `Phoenix6-frc<year>-latest.json` from `https://maven.ctr-electronics.com/release/com/ctre/phoenix6/latest/`. Delete the old Phoenix file. GradleRIO refuses a vendordep whose year is wrong, which is how you find any you missed.
 4. Run `./gradlew build`, then `--offline`. Fix what the new WPILib or Epilogue changed.
 
-## Status and next steps (16 Nov 2026)
+## Status (18 Nov 2026): testing and tuning finished
 
-**Read these first; they replace the older status notes:**
-- `docs/findings-2026-11-16.md`: everything measured on the stand from EL27 to EL35 (mechanism, gains, characterization, speed, the load-sharing fault, tooling facts, a builds-and-runs index).
-- `docs/next-steps.md`: what to do next, in order.
-- `docs/forge-playbook.md`: how to run and score tests on this stand (script template, log analysis recipes, quirks).
+**Read first:** `docs/findings-2026-11-18.md`. Section 1 is **the parameter table for this elevator** (the code's defaults on main: kS 0.12, kG 0.16, kV 0.0643, kA 0.0016, kP 4, kD 0, cruise 90 in/s, accel 700 in/s^2, **jerk off**, 12 V, 40 A; full travel in about 0.245 s, stops repeat within 0.003 in, peak stator 30-32 A, peak volts 56 % of battery). The rest of that file is every experiment from 16-18 Nov (EL35-EL48) and why the two motors differed (the follower's 100 Hz update, fixed in PR #25).
 
-**In one paragraph:** the 0.5 s goal is met on the stand (run f72f9052, EL34: full travel 0.27-0.29 s, worst path error 0.09 in, at 45 in/s, 400 in/s^2, jerk off, 6 V, 40 A, kP 8, kD 0.10), set by script over NetworkTables; the code's defaults are still 10 in/s, 60 in/s^2, 3 V, 20 A. Characterization (kS 0.122, kG 0.162, kV 0.0643, kA ~0.001) and kP 8 / kD 0.10 are confirmed by sweeps. Open: the two Talons do not share load reliably; each settles into a different electrical state at a routine start (seen on both motors, mechanism ruled out); fault bit 512 is `StatorCurrLimit` and fires at logged currents below the limit. Next: find the trigger of that state, make the fast settings the defaults, then raise cruise speed for margin.
+Older documents: `docs/findings-2026-11-16.md` (EL27-EL35: mechanism, architecture, characterization; still valid where the newer file does not override it), `docs/next-steps.md` (its plan is done or superseded; see its header), `docs/forge-playbook.md` (methods; section 3 updated 18 Nov). `tools/forge-scripts/sweep_one_enable.py` is the template for a parameter sweep in one enable with read-back checks and robot-side peaks.
+
+Next: operational code (joystick and autonomous use) on these parameters, in a new session.

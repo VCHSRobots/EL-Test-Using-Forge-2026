@@ -1,5 +1,7 @@
 # Elevator stand: suggested next steps (after 16 Nov 2026)
 
+> **18 Nov 2026: superseded.** Step 1 was answered (the follower's 100 Hz update, fixed in PR #25; see `findings-2026-11-18.md` section 2), steps 2-3 were done (defaults 90 in/s, 700 in/s^2, kP 4, kA 0.0016, jerk off). Kept for the record.
+
 Read `findings-2026-11-16.md` first; this list builds on it. Each step says what it settles. Every stand test is one Forge card, the person enables in Teleop, and the script ends **parked, motors off, waiting for the person's disable** (Forge's disable does not work while a script runs). Score from the robot's WPILOG, not the script's samples.
 
 ## 1. Find what changes the Talons' state (the load-sharing fault)

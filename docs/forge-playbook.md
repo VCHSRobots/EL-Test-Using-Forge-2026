@@ -1,5 +1,7 @@
 # Forge playbook for tuning a mechanism on a stand
 
+> 18 Nov 2026: results and the final parameters are in `findings-2026-11-18.md`. The older `scripts end waiting for disable` rule below is replaced (section 3).
+
 Skills and methods worked out while tuning this elevator stand (15-16 Nov 2026), written so a later Forge conversation, or a person, can reuse them on this stand or another mechanism. The results themselves are in `findings-2026-11-16.md`; the plan in `next-steps.md`.
 
 ## 1. Working with the director
@@ -25,7 +27,8 @@ Skills and methods worked out while tuning this elevator stand (15-16 Nov 2026),
 - Write tuning (`/Elevator/Tuning/...`) **before** `wait_enabled`, or while parked between sets. Gains in use show as `kPInUse`/`kDInUse`.
 - Run routines by name: write `""`, sleep 0.3 s, write the name (`/Elevator/Control/Routine`). Wait on `/Elevator/Status/Parked` after `park`.
 - `mark` each set, `record` every sample with `server_time`.
-- **End:** park with defaults, log "TEST DONE ... PLEASE DISABLE NOW", `wait_disabled(60)`. **Do not call `disable` or rely on `robot_disable`**: it failed 7 of 7 times while a script ran (16 Nov). Tell the person to keep a hand near Disable.
+- **End (rule since 16 Nov, replaces the old one):** park, restore defaults in `on_exit`, log DONE and **finish**. Never wait for the person's disable at the end (`wait_disabled` as the last call is refused); the station's frame tells them to disable. On a station whose Driver Station runs as administrator Forge cannot disable at all, so the person does it.
+- **Sweeps (18 Nov):** use `tools/forge-scripts/sweep_one_enable.py`: one enable, auto-range first, then per set: park, write the value, wait for the Talon's read-back (`/Elevator/Status/Talon...`, `ConfigOk`), `ResetPeaks`, run, read the robot-side peaks. Every row of a recorded CSV must have the same columns.
 - Sweeps in one enable work because tuning is written while parked; one enable per set is not needed.
 
 ## 4. Reading the robot's log
