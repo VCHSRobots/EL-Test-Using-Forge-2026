@@ -20,6 +20,8 @@ import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.FunctionalCommand;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -74,6 +76,18 @@ public class Elevator extends SubsystemBase {
   public static final int STICK_PORT = 0;
   public static final int STICK_AXIS = 1;
   public static final double STICK_DEADBAND = 0.08;
+  // --- Xbox pad (port 0) ---
+  /** Deadband for the pad's left stick: ~5x the worst resting offset measured on the pad (0.009). */
+  public static final double PAD_DEADBAND = 0.05;
+  /** Right trigger past this = slow mode. */
+  public static final double SLOW_TRIGGER_THRESHOLD = 0.5;
+  /** Slow mode runs at this fraction of the default (cruise) speed: 18 in/s at the 90 in/s default. */
+  public static final double SLOW_FRACTION = 0.2;
+  /** Preset heights as fractions of the measured range (A = bottom, B, X, Y = top). */
+  public static final double PRESET_B = 0.33;
+  public static final double PRESET_X = 0.66;
+  /** The held target never leads the carriage by more than braking distance plus this. */
+  public static final double VELOCITY_LEAD_MARGIN_INCHES = 0.5;
 
   // --- Safety ---
   public static final double FAULT_ERROR_INCHES = 1.0;
@@ -460,6 +474,57 @@ public class Elevator extends SubsystemBase {
           moveTo(lowInches() + f * (highInches() - lowInches()));
         })
         .withName("ElevatorFollowStick");
+  }
+
+  /**
+   * Velocity control: the stick sets the carriage's speed (up = positive stick, after the
+   * caller's sign), full deflection = the default cruise speed (Tuning CruiseInPerSec), or
+   * SLOW_FRACTION of it while slow is true. A target height is advanced at that speed and sent
+   * through Motion Magic, so the learned acceleration and feedforward apply, and the target is
+   * kept within the range and within braking distance of the carriage (no wind-up at a stop).
+   * Starts from the current target, so a preset hands over without a jump.
+   */
+  public Command driveVelocity(DoubleSupplier stickUp, BooleanSupplier slow) {
+    return startRun(
+            () -> {
+              if (!closedLoop) {
+                targetInches = positionInches;
+              }
+            },
+            () -> {
+              mode = "velocity";
+              double a = MathUtil.applyDeadband(MathUtil.clamp(stickUp.getAsDouble(), -1, 1), PAD_DEADBAND);
+              double cruise = tuning.get("CruiseInPerSec");
+              double accel = Math.max(1.0, tuning.get("AccelInPerSec2"));
+              double v = a * cruise * (slow.getAsBoolean() ? SLOW_FRACTION : 1.0);
+              double dt = Timer.getFPGATimestamp() - lastVelocityLoop;
+              lastVelocityLoop = Timer.getFPGATimestamp();
+              if (dt <= 0 || dt > 0.1) {
+                dt = 0.02;
+              }
+              double speed = Math.max(Math.abs(v), Math.abs(velocityInPerSec));
+              double lead = speed * speed / (2.0 * accel) + VELOCITY_LEAD_MARGIN_INCHES;
+              double t = targetInches + v * dt;
+              t = MathUtil.clamp(t, positionInches - lead, positionInches + lead);
+              moveTo(t);
+            })
+        .withName("ElevatorDriveVelocity");
+  }
+
+  private double lastVelocityLoop = Timer.getFPGATimestamp();
+
+  /**
+   * A profiled move to a fraction (0 = bottom, 1 = top) of the measured range, held there until
+   * the caller says the driver took over (override true), which ends it so the default command
+   * resumes from this target.
+   */
+  public Command goToFraction(double fraction, BooleanSupplier override) {
+    return run(() -> {
+          mode = "preset";
+          moveTo(lowInches() + MathUtil.clamp(fraction, 0, 1) * (highInches() - lowInches()));
+        })
+        .until(override)
+        .withName("ElevatorPreset" + Math.round(fraction * 100));
   }
 
   /** Profiled move to a fixed height, held until interrupted (tests and scripts). */
