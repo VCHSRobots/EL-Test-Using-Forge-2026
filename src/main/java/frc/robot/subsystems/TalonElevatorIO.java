@@ -12,6 +12,7 @@ import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.configs.VoltageConfigs;
 import com.ctre.phoenix6.controls.CoastOut;
+import com.ctre.phoenix6.controls.DynamicMotionMagicVoltage;
 import com.ctre.phoenix6.controls.ControlRequest;
 import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.MotionMagicVelocityVoltage;
@@ -70,6 +71,8 @@ public class TalonElevatorIO implements ElevatorIO {
   private final TalonFX right;
   private final TalonFX left;
   private final MotionMagicVoltage move = new MotionMagicVoltage(0).withEnableFOC(false);
+  private final DynamicMotionMagicVoltage moveDyn =
+      new DynamicMotionMagicVoltage(0, 0, 0).withEnableFOC(false);
   private final MotionMagicVelocityVoltage moveVel =
       new MotionMagicVelocityVoltage(0).withSlot(1).withEnableFOC(false);
   private final VoltageOut voltsReq = new VoltageOut(0).withEnableFOC(false);
@@ -474,6 +477,13 @@ public class TalonElevatorIO implements ElevatorIO {
   }
 
   @Override
+  public void moveToDynamic(double inches, double cruiseInPerSec, double jerkInPerSec3) {
+    leader().setControl(moveDyn.withPosition(inches).withVelocity(cruiseInPerSec)
+        .withAcceleration(gains.accelInPerSec2()).withJerk(jerkInPerSec3));
+    other().setControl(otherRequest());
+  }
+
+  @Override
   public void moveVelocity(double inPerSec) {
     leader().setControl(moveVel.withVelocity(inPerSec));
     other().setControl(otherRequest());
@@ -524,7 +534,7 @@ public class TalonElevatorIO implements ElevatorIO {
 
   private boolean profiling() {
     var mode = leftLeads() ? leftControlMode : rightControlMode;
-    return mode.getValue() == ControlModeValue.MotionMagicVoltage;
+    return mode.getValue() == ControlModeValue.MotionMagicVoltage; // Dynamic Motion Magic reports as this too
   }
 
   private Extras leaderX() {
