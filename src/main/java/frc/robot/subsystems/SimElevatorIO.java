@@ -141,6 +141,17 @@ public class SimElevatorIO implements ElevatorIO {
   public void applyGains(Gains g) {
     gains = g;
     profile = profileOf(g);
+    gainWrites++;
+  }
+
+  private int gainWrites;
+
+  /** The simulation accepts every write. Its profile has NO jerk limit (a trapezoid), whatever jerk says. */
+  @Override
+  public Applied applied() {
+    Gains g = gains;
+    return new Applied(g.cruiseInPerSec(), g.accelInPerSec2(), g.jerkInPerSec3(), g.kA(), g.kP(), g.kD(),
+        true, "OK", gainWrites);
   }
 
   @Override

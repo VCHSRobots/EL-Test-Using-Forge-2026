@@ -1,6 +1,7 @@
 package frc.robot.subsystems;
 
 import com.ctre.phoenix6.BaseStatusSignal;
+import com.ctre.phoenix6.StatusCode;
 import com.ctre.phoenix6.StatusSignal;
 import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
@@ -22,6 +23,7 @@ import com.ctre.phoenix6.signals.InvertedValue;
 import com.ctre.phoenix6.signals.MotorAlignmentValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
 import com.ctre.phoenix6.signals.StaticFeedforwardSignValue;
+import edu.wpi.first.wpilibj.DriverStation;
 import frc.robot.hardware.Unit;
 import java.util.ArrayList;
 import java.util.List;
@@ -90,14 +92,21 @@ public class TalonElevatorIO implements ElevatorIO {
   private Extras rightX = Extras.ZERO;
   private Extras leftX = Extras.ZERO;
   private LoopTerms loop = LoopTerms.ZERO;
+  // Every config write's answer since the last applyGains: "OK", or the failed writes by name.
+  private final List<String> configFailures = new ArrayList<>();
+  private int gainWrites;
+  private Applied applied = new Applied(0, 0, 0, 0, 0, 0, false, "not read yet", 0);
 
   public TalonElevatorIO(Unit unit) {
     right = new TalonFX(unit.rightMotorId());
     left = new TalonFX(unit.leftMotorId());
     followRight = new Follower(right.getDeviceID(), MotorAlignmentValue.Opposed);
     followLeft = new Follower(left.getDeviceID(), MotorAlignmentValue.Opposed);
-    configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), true);
-    configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), false);
+    check("right startup config",
+        configure(right, InvertedValue.CounterClockwise_Positive, unit.rightRotationsPerInch(), true));
+    check("left startup config",
+        configure(left, InvertedValue.Clockwise_Positive, unit.leftRotationsPerInch(), false));
+    readBack();
     right.setPosition(0);
     left.setPosition(0);
     rightSignals = signalsOf(right);
@@ -228,7 +237,7 @@ public class TalonElevatorIO implements ElevatorIO {
   }
 
   /** leader: the right Talon, with the gains and soft limits; the follower gets neither. */
-  private static void configure(
+  private static StatusCode configure(
       TalonFX motor, InvertedValue direction, double rotationsPerInch, boolean leader) {
     var cfg = new TalonFXConfiguration();
     cfg.MotorOutput.Inverted = direction;
@@ -251,7 +260,33 @@ public class TalonElevatorIO implements ElevatorIO {
       cfg.SoftwareLimitSwitch.ReverseSoftLimitEnable = true;
       cfg.SoftwareLimitSwitch.ReverseSoftLimitThreshold = Elevator.SOFT_LIMIT_MARGIN_INCHES;
     }
-    motor.getConfigurator().apply(cfg);
+    return motor.getConfigurator().apply(cfg);
+  }
+
+  /**
+   * Notes a config write's answer. A rejected write (an out-of-range value, a timeout) leaves the
+   * Talon with its OLD settings, which nothing else would show, so it is reported and published.
+   */
+  private void check(String what, StatusCode code) {
+    if (code.isOK()) return;
+    configFailures.add(what + ": " + code.getName());
+    DriverStation.reportWarning("Elevator config write refused: " + what + ": " + code.getName(), false);
+  }
+
+  /** Reads the leader's Motion Magic and slot 0 back from the Talon itself. Blocks up to ~100 ms. */
+  private void readBack() {
+    var mm = new MotionMagicConfigs();
+    var s0 = new Slot0Configs();
+    check("read back Motion Magic", leader().getConfigurator().refresh(mm, CONFIG_TIMEOUT_S));
+    check("read back slot 0", leader().getConfigurator().refresh(s0, CONFIG_TIMEOUT_S));
+    boolean ok = configFailures.isEmpty();
+    applied = new Applied(mm.MotionMagicCruiseVelocity, mm.MotionMagicAcceleration, mm.MotionMagicJerk,
+        s0.kA, s0.kP, s0.kD, ok, ok ? "OK" : String.join("; ", configFailures), gainWrites);
+  }
+
+  @Override
+  public Applied applied() {
+    return applied;
   }
 
   /** Slot 0 from the gains, for the pair of motors at the same volts (as measured). */
@@ -280,7 +315,10 @@ public class TalonElevatorIO implements ElevatorIO {
   public void applyGains(Gains g) {
     // Only the leader runs the loop; the follower copies its volts.
     gains = g;
+    gainWrites++;
+    configFailures.clear();
     configureLeader(leader());
+    readBack();
   }
 
   private boolean alone() {
@@ -309,9 +347,9 @@ public class TalonElevatorIO implements ElevatorIO {
       g = new Gains(g.kS() * k, g.kG() * k, g.kV(), g.kA() * k, g.kP(), g.kD(),
           g.cruiseInPerSec(), g.accelInPerSec2(), g.jerkInPerSec3());
     }
-    m.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S);
-    m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S);
-    m.getConfigurator().apply(softLimits(), CONFIG_TIMEOUT_S);
+    check("slot 0", m.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S));
+    check("Motion Magic", m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S));
+    check("soft limits", m.getConfigurator().apply(softLimits(), CONFIG_TIMEOUT_S));
   }
 
   private SoftwareLimitSwitchConfigs softLimits() {
@@ -330,8 +368,11 @@ public class TalonElevatorIO implements ElevatorIO {
     left.setControl(neutral);
     drive = d;
     // The non-leader must never stop following because of a soft limit of its own.
-    other().getConfigurator().apply(new SoftwareLimitSwitchConfigs(), CONFIG_TIMEOUT_S);
+    configFailures.clear();
+    check("follower soft limits off",
+        other().getConfigurator().apply(new SoftwareLimitSwitchConfigs(), CONFIG_TIMEOUT_S));
     configureLeader(leader());
+    readBack(); // the new leader's settings
     // So the sticky faults of each test belong to that test.
     right.clearStickyFaults();
     left.clearStickyFaults();
@@ -371,9 +412,14 @@ public class TalonElevatorIO implements ElevatorIO {
     c.SupplyCurrentLimit = statorAmps;
     c.SupplyCurrentLimitEnable = true;
     for (TalonFX m : new TalonFX[] {right, left}) {
-      m.getConfigurator().apply(v, CONFIG_TIMEOUT_S);
-      m.getConfigurator().apply(c, CONFIG_TIMEOUT_S);
+      String who = m == right ? "right " : "left ";
+      check(who + "peak volts", m.getConfigurator().apply(v, CONFIG_TIMEOUT_S));
+      check(who + "current limits", m.getConfigurator().apply(c, CONFIG_TIMEOUT_S));
     }
+    // Caps are written right after the gains (Elevator.applyTuning): fold their answers in.
+    boolean ok = configFailures.isEmpty();
+    applied = new Applied(applied.cruiseInPerSec(), applied.accelInPerSec2(), applied.jerkInPerSec3(),
+        applied.kA(), applied.kP(), applied.kD(), ok, ok ? "OK" : String.join("; ", configFailures), gainWrites);
   }
 
   @Override
