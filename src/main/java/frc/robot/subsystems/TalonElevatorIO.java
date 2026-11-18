@@ -52,7 +52,11 @@ import java.util.function.Function;
  * and the soft limits; the other motor never has soft limits. Each fault is also read by name.
  */
 public class TalonElevatorIO implements ElevatorIO {
-  private static final double CONFIG_TIMEOUT_S = 0.05;
+  // Phoenix 6's own default for a config write; 50 ms timed out read-backs on the stand.
+  private static final double CONFIG_TIMEOUT_S = 0.1;
+  // A read-back is only a check: wait longer and try again before calling it failed.
+  private static final double READBACK_TIMEOUT_S = 0.25;
+  private static final int READBACK_TRIES = 3;
   private static final double LOG_HZ = 100.0;
   // A Follower changes its output only when the leader's output signal (MotorVoltage for our
   // voltage requests, DutyCycle otherwise) arrives, so that signal's rate is the follower's
@@ -273,12 +277,22 @@ public class TalonElevatorIO implements ElevatorIO {
     DriverStation.reportWarning("Elevator config write refused: " + what + ": " + code.getName(), false);
   }
 
-  /** Reads the leader's Motion Magic and slot 0 back from the Talon itself. Blocks up to ~100 ms. */
+  /** Reads the leader's Motion Magic and slot 0 back from the Talon itself. Usually a few ms; blocks up to 1.5 s if the Talon does not answer. */
   private void readBack() {
     var mm = new MotionMagicConfigs();
     var s0 = new Slot0Configs();
-    check("read back Motion Magic", leader().getConfigurator().refresh(mm, CONFIG_TIMEOUT_S));
-    check("read back slot 0", leader().getConfigurator().refresh(s0, CONFIG_TIMEOUT_S));
+    StatusCode mmCode = StatusCode.OK;
+    StatusCode s0Code = StatusCode.OK;
+    for (int i = 0; i < READBACK_TRIES; i++) {
+      mmCode = leader().getConfigurator().refresh(mm, READBACK_TIMEOUT_S);
+      if (mmCode.isOK()) break;
+    }
+    for (int i = 0; i < READBACK_TRIES; i++) {
+      s0Code = leader().getConfigurator().refresh(s0, READBACK_TIMEOUT_S);
+      if (s0Code.isOK()) break;
+    }
+    check("read back Motion Magic", mmCode);
+    check("read back slot 0", s0Code);
     boolean ok = configFailures.isEmpty();
     applied = new Applied(mm.MotionMagicCruiseVelocity, mm.MotionMagicAcceleration, mm.MotionMagicJerk,
         s0.kA, s0.kP, s0.kD, ok, ok ? "OK" : String.join("; ", configFailures), gainWrites);
