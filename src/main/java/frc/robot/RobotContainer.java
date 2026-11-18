@@ -65,7 +65,7 @@ public class RobotContainer {
         .and(() -> Timer.getFPGATimestamp() - lastPreset >= Elevator.PRESET_LOCKOUT_SECONDS)
         .onTrue(
             Commands.runOnce(() -> lastPreset = Timer.getFPGATimestamp())
-                .andThen(elevator.goToFraction(fraction, override)));
+                .andThen(elevator.goToFraction(fraction, override, pad::getRightTriggerAxis)));
   }
 
   /** Autonomous: the dance (auto-range first if the stops are not known yet), then park. */

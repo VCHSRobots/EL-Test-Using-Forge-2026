@@ -93,6 +93,10 @@ public class Elevator extends SubsystemBase {
   public static final double VELOCITY_STOPPED_IN_PER_SEC = 0.5;
   /** Preset heights as fractions of the measured range (A = bottom, B, X, Y = top). */
   public static final double PRESET_LOCKOUT_SECONDS = 0.3;
+  /** Preset moves with the right trigger fully pressed travel at this speed (in/s); much slower than the stick's slow mode (6). */
+  public static final double PRESET_SLOW_IN_PER_SEC = 1.5;
+  /** Speed limit for a barely pressed trigger; the limit slides from here to the slow speed. */
+  public static final double PRESET_FAST_IN_PER_SEC = 30.0;
   public static final double PRESET_B = 0.33;
   public static final double PRESET_X = 0.66;
   /** The held target never leads the carriage by more than braking distance plus this. */
@@ -558,10 +562,31 @@ public class Elevator extends SubsystemBase {
    * resumes from this target.
    */
   public Command goToFraction(double fraction, BooleanSupplier override) {
-    return run(() -> {
-          mode = "preset";
-          moveTo(lowInches() + MathUtil.clamp(fraction, 0, 1) * (highInches() - lowInches()));
-        })
+    return goToFraction(fraction, override, () -> 0.0);
+  }
+
+  /**
+   * Same, with the right trigger slowing the move: the commanded height travels toward the goal
+   * at no more than lerp(PRESET_FAST_IN_PER_SEC, PRESET_SLOW_IN_PER_SEC, trigger) in/s, and Motion
+   * Magic follows it. With the trigger (after its deadband) at 0 the goal is sent whole, as before.
+   */
+  public Command goToFraction(double fraction, BooleanSupplier override, DoubleSupplier slowTrigger) {
+    double[] cmd = new double[1];
+    return startRun(
+            () -> cmd[0] = positionInches,
+            () -> {
+              mode = "preset";
+              double goal = lowInches() + MathUtil.clamp(fraction, 0, 1) * (highInches() - lowInches());
+              double trig = MathUtil.applyDeadband(MathUtil.clamp(slowTrigger.getAsDouble(), 0, 1), PAD_DEADBAND);
+              if (trig <= 0) {
+                cmd[0] = goal;
+              } else {
+                double rate = PRESET_FAST_IN_PER_SEC + (PRESET_SLOW_IN_PER_SEC - PRESET_FAST_IN_PER_SEC) * trig;
+                double step = rate * 0.02;
+                cmd[0] += MathUtil.clamp(goal - cmd[0], -step, step);
+              }
+              moveTo(cmd[0]);
+            })
         .until(override)
         .withName("ElevatorPreset" + Math.round(fraction * 100));
   }
