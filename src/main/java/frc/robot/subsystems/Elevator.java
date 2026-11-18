@@ -51,7 +51,7 @@ public class Elevator extends SubsystemBase {
   // follower runs them (the right Talon leads, the left copies its volts).
   // kP 8 V/in and kD 0.10 V/(in/s) on the pair: not tuned yet (the next step is a sweep).
   public static final ElevatorIO.Gains DEFAULT_GAINS =
-      new ElevatorIO.Gains(0.12, 0.16, 0.0643, 0.0010, 4.0, 0.0, 90.0, 700.0, 0.0);
+      new ElevatorIO.Gains(0.12, 0.16, 0.0643, 0.0016, 4.0, 0.0, 90.0, 700.0, 0.0);
   public static final double DEFAULT_PEAK_VOLTS = 12.0;
   public static final double DEFAULT_STATOR_AMPS = 40.0;
   /** Hard ceilings the tuning values can never exceed. */
@@ -106,7 +106,7 @@ public class Elevator extends SubsystemBase {
   /** The ramps also end at this speed (in/s), before the carriage runs out of travel. */
   public static final double RAMP_STOP_IN_PER_SEC = 32.0;
   /** The ramps end this far from either stop (more than CHAR_GUARD_INCHES: they brake from a higher speed). */
-  public static final double RAMP_GUARD_INCHES = 2.0;
+  public static final double RAMP_GUARD_INCHES = 3.0;
   public static final double RAMP_MAX_VOLTS = 5.0;
   /** Open-loop phases end this far from either stop, then brake. */
   public static final double CHAR_GUARD_INCHES = 1.25;

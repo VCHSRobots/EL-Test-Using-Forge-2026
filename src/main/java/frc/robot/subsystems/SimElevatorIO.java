@@ -38,8 +38,8 @@ public class SimElevatorIO implements ElevatorIO {
   public static final double GRAVITY_VOLTS = 0.162;
   /** Volts on both motors per in/s of carriage speed (kV measured on EL29, same volts on both). */
   public static final double MEASURED_KV = 0.0643;
-  /** Volts on both motors per in/s^2 (kA measured on EL29; rough, from 1 V steps). */
-  public static final double MEASURED_KA = 0.0010;
+  /** Volts on both motors per in/s^2: EL29 measured 0.0010 (rough, from 1 V steps), but the kA sweep and EL44 confirm (17 Nov) moved best at 0.0016, so the model takes the heavier value. */
+  public static final double MEASURED_KA = 0.0016;
 
   private static final DCMotor MOTOR = DCMotor.getKrakenX44(1);
   private static final int RIGHT = 0;
