@@ -179,6 +179,22 @@ class ElevatorScenarioTest {
   }
 
   @Test
+  void resetPeaksRestartsThePeaksWithoutANewEnable() {
+    try (Scenario sc = Scenario.start()) {
+      SimElevatorIO io = new SimElevatorIO();
+      Elevator e = ranged(sc, io, Elevator.NOMINAL_TRAVEL_INCHES);
+      e.goTo(e.highInches()).schedule();
+      sc.run(1.0);
+      assertTrue(e.peakStatorAmps() > 10, "a full move should set a peak: " + e.peakStatorAmps());
+      e.park().schedule();
+      sc.run(3.0);
+      NetworkTableInstance.getDefault().getEntry(Elevator.RESET_PEAKS_TOPIC).setDouble(1);
+      sc.run(0.1);
+      assertTrue(e.peakStatorAmps() < 2, "parked, after a reset: " + e.peakStatorAmps());
+    }
+  }
+
+  @Test
   void abortCutsTheOutputUntilCleared() {
     try (Scenario sc = Scenario.start()) {
       SimElevatorIO io = new SimElevatorIO();
