@@ -207,4 +207,30 @@ class PadControlTest {
       assertEquals(e.highInches(), e.positionInches(), 0.1);
     }
   }
+
+  @Test
+  void releasingTheTriggerMidPresetSpeedsUpAtTheAccelerationLimit() {
+    try (Scenario sc = Scenario.start()) {
+      Elevator e = ranged(sc);
+      press(sc, XboxController.Button.kA, 1.5);
+      DriverStationSim.setJoystickAxis(0, XboxController.Axis.kRightTrigger.value, 1.0);
+      DriverStationSim.setJoystickButtons(0, button(XboxController.Button.kY));
+      DriverStationSim.notifyNewData();
+      sc.run(0.06);
+      DriverStationSim.setJoystickButtons(0, 0);
+      DriverStationSim.notifyNewData();
+      sc.run(1.0);
+      assertEquals(Elevator.PRESET_SLOW_IN_PER_SEC, e.velocityInPerSec(), 0.6);
+      pad(0, 0, 0); // trigger released: cruise goes from 3 to the full profile speed
+      double maxStep = 0;
+      double last = e.velocityInPerSec();
+      for (int i = 0; i < 40; i++) {
+        sc.run(0.02);
+        maxStep = Math.max(maxStep, Math.abs(e.velocityInPerSec() - last));
+        last = e.velocityInPerSec();
+      }
+      // No snap: speed changes per 20 ms stay near the acceleration limit (700 in/s^2 = 14 in/s).
+      assertTrue(maxStep < 20.0, "speed jumped " + maxStep + " in/s in one loop");
+    }
+  }
 }

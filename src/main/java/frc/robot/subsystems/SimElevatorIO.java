@@ -105,6 +105,10 @@ public class SimElevatorIO implements ElevatorIO {
     effectiveKg = MEASURED_KA * newtonsPerVolt / M_PER_IN;
   }
 
+  private TrapezoidProfile dynProfile() {
+    return new TrapezoidProfile(new TrapezoidProfile.Constraints(dynCruise, gains.accelInPerSec2()));
+  }
+
   private static TrapezoidProfile profileOf(Gains g) {
     return new TrapezoidProfile(new TrapezoidProfile.Constraints(g.cruiseInPerSec(), g.accelInPerSec2()));
   }
@@ -193,6 +197,7 @@ public class SimElevatorIO implements ElevatorIO {
 
   @Override
   public void moveTo(double inches) {
+    dynCruise = Double.NaN;
     if (mode != Mode.PROFILE) {
       // Like the Talon: the profile starts from where the carriage is and how fast it moves.
       ref = new TrapezoidProfile.State(readInches(), velInPerSec);
@@ -201,6 +206,15 @@ public class SimElevatorIO implements ElevatorIO {
     mode = Mode.PROFILE;
     goalIn = inches;
   }
+
+  /** Dynamic Motion Magic in the simulation: the same trapezoid with this move's cruise (no jerk limit). */
+  @Override
+  public void moveToDynamic(double inches, double cruiseInPerSec, double jerkInPerSec3) {
+    moveTo(inches);
+    dynCruise = cruiseInPerSec;
+  }
+
+  private double dynCruise = Double.NaN;
 
   @Override
   public void moveVelocity(double inPerSec) {
@@ -244,7 +258,7 @@ public class SimElevatorIO implements ElevatorIO {
     double loopVolts = 0; // the leader's (right Talon's) Motion Magic output; the left follows it
     if (mode == Mode.PROFILE) {
       double oldVel = ref.velocity;
-      ref = profile.calculate(dt, ref, new TrapezoidProfile.State(goalIn, 0));
+      ref = (Double.isNaN(dynCruise) ? profile : dynProfile()).calculate(dt, ref, new TrapezoidProfile.State(goalIn, 0));
       refAccel = (ref.velocity - oldVel) / dt;
       Gains g = gains;
       double ff = alone() ? ALONE_FEEDFORWARD_SCALE : 1.0; // one motor does the pair's work

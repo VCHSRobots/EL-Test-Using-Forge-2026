@@ -108,6 +108,15 @@ public interface ElevatorIO {
   void moveTo(double inches);
 
   /**
+   * Dynamic Motion Magic move: one target, with this move's cruise speed (in/s) and jerk (in/s^3)
+   * sent in the request; acceleration stays the configured one. The cruise may change from one
+   * call to the next while the move runs; the controller ramps to it at its acceleration limit.
+   */
+  default void moveToDynamic(double inches, double cruiseInPerSec, double jerkInPerSec3) {
+    moveTo(inches);
+  }
+
+  /**
    * Velocity mode (Motion Magic Velocity): the controller ramps the speed to this value (in/s, up
    * positive) at the configured acceleration and holds it, with no position target. Soft limits
    * still stop it. VELOCITY_KP is the velocity loop's gain (V per in/s of speed error).

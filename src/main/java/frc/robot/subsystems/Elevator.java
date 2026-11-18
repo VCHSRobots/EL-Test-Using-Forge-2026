@@ -94,9 +94,12 @@ public class Elevator extends SubsystemBase {
   /** Preset heights as fractions of the measured range (A = bottom, B, X, Y = top). */
   public static final double PRESET_LOCKOUT_SECONDS = 0.3;
   /** Preset moves with the right trigger fully pressed travel at this speed (in/s); much slower than the stick's slow mode (6). */
-  public static final double PRESET_SLOW_IN_PER_SEC = 1.5;
+  public static final double PRESET_SLOW_IN_PER_SEC = 3.0;
   /** Speed limit for a barely pressed trigger; the limit slides from here to the slow speed. */
   public static final double PRESET_FAST_IN_PER_SEC = 30.0;
+
+  /** Jerk limit (in/s^3) sent with preset moves, to round the start and stop. */
+  public static final double PRESET_JERK_IN_PER_SEC3 = 3000.0;
   public static final double PRESET_B = 0.33;
   public static final double PRESET_X = 0.66;
   /** The held target never leads the carriage by more than braking distance plus this. */
@@ -437,6 +440,14 @@ public class Elevator extends SubsystemBase {
 
   /** Profiled move to a height, clamped to the usable range. */
   private void moveTo(double inches) {
+    moveTo(inches, Double.NaN);
+  }
+
+  /**
+   * Same, but with a cruise speed (in/s) for this move (Dynamic Motion Magic: one target, and the
+   * Talon applies its own acceleration to a change of cruise). NaN means the configured cruise.
+   */
+  private void moveTo(double inches, double cruiseInPerSec) {
     double target = MathUtil.clamp(inches, lowInches(), highInches());
     if (!closedLoop || Math.abs(target - targetInches) > 1e-6) {
       profileStartTime = Timer.getFPGATimestamp();
@@ -448,7 +459,11 @@ public class Elevator extends SubsystemBase {
     if (blocked()) {
       io.neutral();
     } else {
-      io.moveTo(targetInches);
+      if (Double.isNaN(cruiseInPerSec)) {
+        io.moveTo(targetInches);
+      } else {
+        io.moveToDynamic(targetInches, cruiseInPerSec, PRESET_JERK_IN_PER_SEC3);
+      }
     }
   }
 
@@ -566,26 +581,23 @@ public class Elevator extends SubsystemBase {
   }
 
   /**
-   * Same, with the right trigger slowing the move: the commanded height travels toward the goal
-   * at no more than lerp(PRESET_FAST_IN_PER_SEC, PRESET_SLOW_IN_PER_SEC, trigger) in/s, and Motion
-   * Magic follows it. With the trigger (after its deadband) at 0 the goal is sent whole, as before.
+   * Same, with the right trigger slowing the move. The goal is sent once as the real target
+   * (Dynamic Motion Magic); the trigger only sets the cruise speed, lerp(PRESET_FAST_IN_PER_SEC,
+   * PRESET_SLOW_IN_PER_SEC, trigger) in/s, which the Talon ramps at its acceleration limit, so a
+   * trigger change or release is smooth. Trigger at 0 (after its deadband): the configured cruise.
+   * The target is never stepped: stepping makes the Talon plan a new stop-and-go move every loop.
    */
   public Command goToFraction(double fraction, BooleanSupplier override, DoubleSupplier slowTrigger) {
-    double[] cmd = new double[1];
     return startRun(
-            () -> cmd[0] = positionInches,
+            () -> {},
             () -> {
               mode = "preset";
               double goal = lowInches() + MathUtil.clamp(fraction, 0, 1) * (highInches() - lowInches());
               double trig = MathUtil.applyDeadband(MathUtil.clamp(slowTrigger.getAsDouble(), 0, 1), PAD_DEADBAND);
-              if (trig <= 0) {
-                cmd[0] = goal;
-              } else {
-                double rate = PRESET_FAST_IN_PER_SEC + (PRESET_SLOW_IN_PER_SEC - PRESET_FAST_IN_PER_SEC) * trig;
-                double step = rate * 0.02;
-                cmd[0] += MathUtil.clamp(goal - cmd[0], -step, step);
-              }
-              moveTo(cmd[0]);
+              double cruise = trig <= 0
+                  ? DEFAULT_GAINS.cruiseInPerSec()
+                  : PRESET_FAST_IN_PER_SEC + (PRESET_SLOW_IN_PER_SEC - PRESET_FAST_IN_PER_SEC) * trig;
+              moveTo(goal, cruise);
             })
         .until(override)
         .withName("ElevatorPreset" + Math.round(fraction * 100));
