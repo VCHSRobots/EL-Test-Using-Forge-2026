@@ -184,4 +184,27 @@ class PadControlTest {
       assertTrue(e.positionInches() < e.highInches() - 1.0);
     }
   }
+
+  @Test
+  void presetWithTheTriggerHeldMovesSlowly() {
+    try (Scenario sc = Scenario.start()) {
+      Elevator e = ranged(sc);
+      press(sc, XboxController.Button.kA, 1.5);
+      double start = e.positionInches();
+      // Y with the trigger fully held: about PRESET_SLOW_IN_PER_SEC, not the profile's speed.
+      DriverStationSim.setJoystickAxis(0, XboxController.Axis.kRightTrigger.value, 1.0);
+      DriverStationSim.setJoystickButtons(0, button(XboxController.Button.kY));
+      DriverStationSim.notifyNewData();
+      sc.run(0.06);
+      DriverStationSim.setJoystickButtons(0, 0);
+      DriverStationSim.notifyNewData();
+      sc.run(2.0);
+      double moved = e.positionInches() - start;
+      assertEquals(Elevator.PRESET_SLOW_IN_PER_SEC * 2.0, moved, 0.5);
+      // Release the trigger: it finishes at the normal speed.
+      pad(0, 0, 0);
+      sc.run(1.5);
+      assertEquals(e.highInches(), e.positionInches(), 0.1);
+    }
+  }
 }
