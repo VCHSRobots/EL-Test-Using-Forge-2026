@@ -54,7 +54,7 @@ public class SimElevatorIO implements ElevatorIO {
   /** Back-EMF per rad/s, per motor: the data sheet's, scaled so the sim's kV is the measured one. */
   private final double emfVoltsPerRadPerSec;
 
-  private enum Mode { NEUTRAL, VOLTS, PROFILE }
+  private enum Mode { NEUTRAL, VOLTS, PROFILE, VELOCITY }
 
   // --- the stand ---
   private double trueTravelInches = Elevator.NOMINAL_TRAVEL_INCHES;
@@ -65,6 +65,7 @@ public class SimElevatorIO implements ElevatorIO {
   private Mode mode = Mode.NEUTRAL;
   private double voltsCmd;
   private double goalIn;
+  private double goalVel;
   private TrapezoidProfile.State ref = new TrapezoidProfile.State();
   private double refAccel;
   private Gains gains = Elevator.DEFAULT_GAINS;
@@ -202,6 +203,17 @@ public class SimElevatorIO implements ElevatorIO {
   }
 
   @Override
+  public void moveVelocity(double inPerSec) {
+    if (mode != Mode.VELOCITY) {
+      // Like the Talon: the reference starts at the carriage's own speed.
+      ref = new TrapezoidProfile.State(readInches(), velInPerSec);
+      refAccel = 0;
+    }
+    mode = Mode.VELOCITY;
+    goalVel = inPerSec;
+  }
+
+  @Override
   public void setVolts(double volts) {
     mode = Mode.VOLTS;
     voltsCmd = volts;
@@ -243,13 +255,28 @@ public class SimElevatorIO implements ElevatorIO {
           + g.kP() * (ref.position - readInches())
           + g.kD() * (ref.velocity - velInPerSec);
     }
+    if (mode == Mode.VELOCITY) {
+      // Motion Magic Velocity: the reference speed ramps to the goal at the acceleration limit.
+      double oldVel = ref.velocity;
+      double maxStep = gains.accelInPerSec2() * dt;
+      double newVel = oldVel + MathUtil.clamp(goalVel - oldVel, -maxStep, maxStep);
+      ref = new TrapezoidProfile.State(ref.position + newVel * dt, newVel);
+      refAccel = (newVel - oldVel) / dt;
+      Gains g = gains;
+      double ff = alone() ? ALONE_FEEDFORWARD_SCALE : 1.0;
+      loopVolts = ff * g.kG()
+          + ff * g.kS() * Math.signum(ref.velocity)
+          + g.kV() * ref.velocity
+          + ff * g.kA() * refAccel
+          + VELOCITY_KP * (ref.velocity - velInPerSec);
+    }
     double reading = readInches();
     double drive = 0; // newtons up, both motors
     // The leader's volts: its soft limits (neutral, brake, in the blocked direction) and peak volts.
     double v =
         switch (mode) {
           case VOLTS -> voltsCmd;
-          case PROFILE -> loopVolts;
+          case PROFILE, VELOCITY -> loopVolts;
           default -> 0.0; // brake mode: the windings are shorted
         };
     if ((fwdOn && reading >= fwdLimit && v > 0) || (revOn && reading <= revLimit && v < 0)) {

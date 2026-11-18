@@ -7,12 +7,14 @@ import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
 import com.ctre.phoenix6.configs.MotionMagicConfigs;
 import com.ctre.phoenix6.configs.Slot0Configs;
+import com.ctre.phoenix6.configs.Slot1Configs;
 import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.configs.VoltageConfigs;
 import com.ctre.phoenix6.controls.CoastOut;
 import com.ctre.phoenix6.controls.ControlRequest;
 import com.ctre.phoenix6.controls.Follower;
+import com.ctre.phoenix6.controls.MotionMagicVelocityVoltage;
 import com.ctre.phoenix6.controls.MotionMagicVoltage;
 import com.ctre.phoenix6.controls.NeutralOut;
 import com.ctre.phoenix6.controls.VoltageOut;
@@ -68,6 +70,8 @@ public class TalonElevatorIO implements ElevatorIO {
   private final TalonFX right;
   private final TalonFX left;
   private final MotionMagicVoltage move = new MotionMagicVoltage(0).withEnableFOC(false);
+  private final MotionMagicVelocityVoltage moveVel =
+      new MotionMagicVelocityVoltage(0).withSlot(1).withEnableFOC(false);
   private final VoltageOut voltsReq = new VoltageOut(0).withEnableFOC(false);
   private final Follower followRight;
   private final Follower followLeft;
@@ -256,6 +260,7 @@ public class TalonElevatorIO implements ElevatorIO {
     cfg.CurrentLimits.SupplyCurrentLimitEnable = true;
     if (leader) {
       cfg.Slot0 = slot0(Elevator.DEFAULT_GAINS);
+      cfg.Slot1 = slot1(Elevator.DEFAULT_GAINS);
       cfg.MotionMagic = motionMagic(Elevator.DEFAULT_GAINS);
       // Until the travel is measured, soft limits assume zero is the bottom and nominal travel.
       cfg.SoftwareLimitSwitch.ForwardSoftLimitEnable = true;
@@ -317,6 +322,21 @@ public class TalonElevatorIO implements ElevatorIO {
     return s;
   }
 
+  /** Slot 1 (velocity mode): the same feedforward as slot 0, with a small P on speed error, no D. */
+  private static Slot1Configs slot1(Gains g) {
+    var s0 = slot0(g);
+    var s = new Slot1Configs();
+    s.GravityType = s0.GravityType;
+    s.StaticFeedforwardSign = s0.StaticFeedforwardSign;
+    s.kS = s0.kS;
+    s.kG = s0.kG;
+    s.kV = s0.kV;
+    s.kA = s0.kA;
+    s.kP = VELOCITY_KP;
+    s.kD = 0;
+    return s;
+  }
+
   private static MotionMagicConfigs motionMagic(Gains g) {
     var m = new MotionMagicConfigs();
     m.MotionMagicCruiseVelocity = g.cruiseInPerSec();
@@ -362,6 +382,7 @@ public class TalonElevatorIO implements ElevatorIO {
           g.cruiseInPerSec(), g.accelInPerSec2(), g.jerkInPerSec3());
     }
     check("slot 0", m.getConfigurator().apply(slot0(g), CONFIG_TIMEOUT_S));
+    check("slot 1", m.getConfigurator().apply(slot1(g), CONFIG_TIMEOUT_S));
     check("Motion Magic", m.getConfigurator().apply(motionMagic(g), CONFIG_TIMEOUT_S));
     check("soft limits", m.getConfigurator().apply(softLimits(), CONFIG_TIMEOUT_S));
   }
@@ -449,6 +470,12 @@ public class TalonElevatorIO implements ElevatorIO {
   @Override
   public void moveTo(double inches) {
     leader().setControl(move.withPosition(inches));
+    other().setControl(otherRequest());
+  }
+
+  @Override
+  public void moveVelocity(double inPerSec) {
+    leader().setControl(moveVel.withVelocity(inPerSec));
     other().setControl(otherRequest());
   }
 
