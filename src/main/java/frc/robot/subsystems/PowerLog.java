@@ -2,6 +2,7 @@ package frc.robot.subsystems;
 
 import edu.wpi.first.epilogue.Logged;
 import edu.wpi.first.networktables.DoublePublisher;
+import edu.wpi.first.networktables.DoubleSubscriber;
 import edu.wpi.first.networktables.NetworkTable;
 import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.wpilibj.DriverStation;
@@ -37,6 +38,10 @@ public class PowerLog extends SubsystemBase {
   double minPdhVolts;
 
   private boolean wasEnabled;
+  // A script changes /Elevator/Control/ResetPeaks to restart the peaks without a new enable.
+  private final DoubleSubscriber resetPeaksSub =
+      NetworkTableInstance.getDefault().getDoubleTopic(Elevator.RESET_PEAKS_TOPIC).subscribe(0);
+  private double lastResetPeaks;
   private final DoublePublisher voltsPub;
   private final DoublePublisher totalAmpsPub;
   private final DoublePublisher rightMotorAmpsPub;
@@ -70,9 +75,12 @@ public class PowerLog extends SubsystemBase {
     pdhTotalWatts = pdhVolts * pdhTotalAmps;
     pdhTempC = pdh.getTemperature();
 
-    // Peaks since the last enable (reset at each enable).
+    // Peaks since the last enable (reset at each enable, or when ResetPeaks changes).
     boolean enabled = DriverStation.isEnabled();
-    if (enabled && !wasEnabled) {
+    double reset = resetPeaksSub.get();
+    boolean resetAsked = reset != lastResetPeaks;
+    lastResetPeaks = reset;
+    if ((enabled && !wasEnabled) || resetAsked) {
       peakPdhTotalAmps = 0;
       peakPdhMotorsAmps = 0;
       minPdhVolts = 0;

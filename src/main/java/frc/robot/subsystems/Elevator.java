@@ -6,6 +6,7 @@ import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.networktables.BooleanPublisher;
 import edu.wpi.first.networktables.BooleanSubscriber;
 import edu.wpi.first.networktables.DoublePublisher;
+import edu.wpi.first.networktables.DoubleSubscriber;
 import edu.wpi.first.networktables.IntegerPublisher;
 import edu.wpi.first.networktables.NetworkTable;
 import edu.wpi.first.networktables.NetworkTableInstance;
@@ -66,6 +67,8 @@ public class Elevator extends SubsystemBase {
    * 18 Nov jerk sweep wrote 10000-40000 and could not tell what ran. Tuning clamps to this.
    */
   public static final double MAX_JERK_IN_PER_SEC3 = 9999.0;
+  /** Change this number (any new value) to restart every peak (current, volts, PDH) without a new enable. */
+  public static final String RESET_PEAKS_TOPIC = "/Elevator/Control/ResetPeaks";
 
   // --- Stick ---
   public static final int STICK_PORT = 0;
@@ -125,6 +128,8 @@ public class Elevator extends SubsystemBase {
   private final ElevatorIO io;
   private final Tuning tuning = new Tuning("Elevator/Tuning");
   private final BooleanSubscriber abortSub;
+  private final DoubleSubscriber resetPeaksSub;
+  private double lastResetPeaks;
   private final StringSubscriber routineSub;
   private final StringPublisher routinePub;
   private final IntegerPublisher routineCountPub;
@@ -301,6 +306,7 @@ public class Elevator extends SubsystemBase {
 
     NetworkTableInstance nt = NetworkTableInstance.getDefault();
     abortSub = nt.getBooleanTopic("/Forge/Abort").subscribe(false);
+    resetPeaksSub = nt.getDoubleTopic(RESET_PEAKS_TOPIC).subscribe(0);
     NetworkTable control = nt.getTable("Elevator/Control");
     routineSub = control.getStringTopic("Routine").subscribe("");
     control.getStringTopic("Routine").publish().set("");
@@ -884,7 +890,10 @@ public class Elevator extends SubsystemBase {
    * at each enable), so a test script can check the headroom rule from what it records.
    */
   private void publishPower(boolean enabled) {
-    if (enabled && !wasEnabled) {
+    double reset = resetPeaksSub.get();
+    boolean resetAsked = reset != lastResetPeaks;
+    lastResetPeaks = reset;
+    if ((enabled && !wasEnabled) || resetAsked) {
       peakStatorAmps = 0;
       peakSupplyAmps = 0;
       peakMotorVolts = 0;
