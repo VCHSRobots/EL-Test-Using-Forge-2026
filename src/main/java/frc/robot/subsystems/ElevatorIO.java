@@ -107,6 +107,16 @@ public interface ElevatorIO {
   /** Profiled move (Motion Magic) to this height; feedforward and PD run in the controller. */
   void moveTo(double inches);
 
+  /**
+   * Velocity mode (Motion Magic Velocity): the controller ramps the speed to this value (in/s, up
+   * positive) at the configured acceleration and holds it, with no position target. Soft limits
+   * still stop it. VELOCITY_KP is the velocity loop's gain (V per in/s of speed error).
+   */
+  void moveVelocity(double inPerSec);
+
+  /** Volts per in/s of speed error in velocity mode (slot 1); slot 0's kP is per inch. */
+  double VELOCITY_KP = 0.1;
+
   /** Open-loop volts on both motors (up positive). */
   void setVolts(double volts);
 

@@ -79,15 +79,24 @@ public class Elevator extends SubsystemBase {
   // --- Xbox pad (port 0) ---
   /** Deadband for the pad's left stick: ~5x the worst resting offset measured on the pad (0.009). */
   public static final double PAD_DEADBAND = 0.05;
-  /** Right trigger past this = slow mode. */
-  public static final double SLOW_TRIGGER_THRESHOLD = 0.5;
-  /** Slow mode runs at this fraction of the default (cruise) speed: 18 in/s at the 90 in/s default. */
+  /** Full stick = this speed, in/s (director, 18 Nov 2026; the stand's 9 in travel cannot use the 90 in/s cruise). */
+  public static final double PAD_MAX_IN_PER_SEC = 30.0;
+  /** Right trigger fully pressed = this fraction of the stick's speed (6 in/s at full stick); the trigger scales smoothly. */
   public static final double SLOW_FRACTION = 0.2;
+  /** Stick curve: this much linear, the rest cubic, so small deflections creep and full stick is full speed. */
+  public static final double PAD_CURVE_LINEAR = 0.3;
+  /** Near an end the speed is capped by sqrt(2 * this share of the acceleration * distance left). */
+  /** The glide aims to stop this far inside the usable range, so the velocity loop's lag never reaches it. */
+  public static final double PAD_END_MARGIN_INCHES = 0.1;
+  public static final double PAD_BRAKE_FRACTION = 0.35;
+  /** Below this speed (in/s) the carriage counts as stopped, and the height is latched and held. */
+  public static final double VELOCITY_STOPPED_IN_PER_SEC = 0.5;
   /** Preset heights as fractions of the measured range (A = bottom, B, X, Y = top). */
+  public static final double PRESET_LOCKOUT_SECONDS = 0.3;
   public static final double PRESET_B = 0.33;
   public static final double PRESET_X = 0.66;
   /** The held target never leads the carriage by more than braking distance plus this. */
-  public static final double VELOCITY_LEAD_MARGIN_INCHES = 0.5;
+  public static final double VELOCITY_LEAD_MARGIN_INCHES = 0.5; // unused since the velocity mode (kept for tests)
 
   // --- Safety ---
   public static final double FAULT_ERROR_INCHES = 1.0;
@@ -384,6 +393,7 @@ public class Elevator extends SubsystemBase {
   // ---------------------------------------------------------------- queries
 
   public double positionInches() { return positionInches; }
+  public double velocityInPerSec() { return velocityInPerSec; }
   public double targetInches() { return targetInches; }
   public double travelInches() { return travelInches; }
   public boolean isRanged() { return ranged; }
@@ -477,16 +487,20 @@ public class Elevator extends SubsystemBase {
   }
 
   /**
-   * Velocity control: the stick sets the carriage's speed (up = positive stick, after the
-   * caller's sign), full deflection = the default cruise speed (Tuning CruiseInPerSec), or
-   * SLOW_FRACTION of it while slow is true. A target height is advanced at that speed and sent
-   * through Motion Magic, so the learned acceleration and feedforward apply, and the target is
-   * kept within the range and within braking distance of the carriage (no wind-up at a stop).
-   * Starts from the current target, so a preset hands over without a jump.
+   * Velocity control: the stick sets the carriage's speed and it keeps moving at that speed (Motion
+   * Magic Velocity in the Talon, ramped by the learned acceleration, no target height) until the
+   * stick is released or the end of the usable range is near. Speed = sign * curve(|stick|) *
+   * PAD_MAX_IN_PER_SEC * (1 - (1 - SLOW_FRACTION) * trigger), where curve is PAD_CURVE_LINEAR * x +
+   * (1 - PAD_CURVE_LINEAR) * x^3 after the deadband. Near an end the speed is capped by
+   * sqrt(2 * a * distance left), so it glides to a stop at the end of the range (0.25 in inside the
+   * hard stop) instead of reaching the soft limit at speed. Released: the speed ramps to zero, and
+   * only then is the height latched and held (one position setpoint, set after the motion ends).
    */
-  public Command driveVelocity(DoubleSupplier stickUp, BooleanSupplier slow) {
+  public Command driveVelocity(DoubleSupplier stickUp, DoubleSupplier slowTrigger) {
     return startRun(
             () -> {
+              // From a held target (a preset) keep holding it until the stick moves; otherwise latch.
+              velocityHolding = closedLoop;
               if (!closedLoop) {
                 targetInches = positionInches;
               }
@@ -494,21 +508,46 @@ public class Elevator extends SubsystemBase {
             () -> {
               mode = "velocity";
               double a = MathUtil.applyDeadband(MathUtil.clamp(stickUp.getAsDouble(), -1, 1), PAD_DEADBAND);
-              double cruise = tuning.get("CruiseInPerSec");
+              double trig = MathUtil.applyDeadband(MathUtil.clamp(slowTrigger.getAsDouble(), 0, 1), PAD_DEADBAND);
               double accel = Math.max(1.0, tuning.get("AccelInPerSec2"));
-              double v = a * cruise * (slow.getAsBoolean() ? SLOW_FRACTION : 1.0);
-              double dt = Timer.getFPGATimestamp() - lastVelocityLoop;
-              lastVelocityLoop = Timer.getFPGATimestamp();
-              if (dt <= 0 || dt > 0.1) {
-                dt = 0.02;
+              double top = Math.min(PAD_MAX_IN_PER_SEC, tuning.get("CruiseInPerSec"));
+              double shaped = Math.signum(a) * (PAD_CURVE_LINEAR * Math.abs(a) + (1 - PAD_CURVE_LINEAR) * Math.pow(Math.abs(a), 3));
+              double v = shaped * top * (1.0 - (1.0 - SLOW_FRACTION) * trig);
+              // Cap the speed toward an end by the distance left (a share of the acceleration limit).
+              double brake = PAD_BRAKE_FRACTION * accel;
+              if (v > 0) {
+                v = Math.min(v, Math.sqrt(2.0 * brake * Math.max(0.0, highInches() - PAD_END_MARGIN_INCHES - positionInches)));
+              } else if (v < 0) {
+                v = -Math.min(-v, Math.sqrt(2.0 * brake * Math.max(0.0, positionInches - lowInches() - PAD_END_MARGIN_INCHES)));
               }
-              double speed = Math.max(Math.abs(v), Math.abs(velocityInPerSec));
-              double lead = speed * speed / (2.0 * accel) + VELOCITY_LEAD_MARGIN_INCHES;
-              double t = targetInches + v * dt;
-              t = MathUtil.clamp(t, positionInches - lead, positionInches + lead);
-              moveTo(t);
+              if (v != 0.0) {
+                velocityHolding = false;
+                velocityCommand(v);
+              } else if (!velocityHolding && Math.abs(velocityInPerSec) > VELOCITY_STOPPED_IN_PER_SEC) {
+                velocityCommand(0.0); // released or at the end: ramp the speed to zero first
+              } else {
+                if (!velocityHolding) {
+                  velocityHolding = true;
+                  targetInches = positionInches; // latch where it stopped, once
+                }
+                moveTo(targetInches);
+              }
             })
         .withName("ElevatorDriveVelocity");
+  }
+
+  /** True while the stick drives a speed and no height is being held. */
+  private boolean velocityHolding = true;
+
+  /** Sends a speed to the Talon (Motion Magic Velocity); no height target, so no lag fault. */
+  private void velocityCommand(double inPerSec) {
+    closedLoop = false;
+    openLoopVolts = 0;
+    if (blocked()) {
+      io.neutral();
+    } else {
+      io.moveVelocity(inPerSec);
+    }
   }
 
   private double lastVelocityLoop = Timer.getFPGATimestamp();
