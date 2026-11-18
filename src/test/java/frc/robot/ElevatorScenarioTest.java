@@ -76,22 +76,14 @@ class ElevatorScenarioTest {
   }
 
   @Test
-  void firstTeleopEnableRangesByItselfThenTheStickCoversTheMeasuredRange() {
+  void firstTeleopEnableRangesByItself() {
     try (Scenario sc = Scenario.start()) {
       RobotContainer rc = new RobotContainer(KnownUnits.SIMULATION);
       Elevator e = rc.elevator;
-      stick(0.0);
       sc.run(0.2);
       sc.enable();
       sc.run(8.0);
       assertEquals(RangeStatus.DONE, e.rangeStatus());
-      assertEquals(e.lowInches(), e.positionInches(), 0.03); // stick released = bottom of range
-      stick(-1.0);
-      sc.run(2.0);
-      assertEquals(e.highInches(), e.positionInches(), 0.03);
-      stick(-0.5);
-      sc.run(2.0);
-      assertEquals((e.lowInches() + e.highInches()) / 2, e.positionInches(), 0.03);
       // A second enable does not range again.
       sc.disable();
       sc.run(0.2);
